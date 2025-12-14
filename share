@@ -1,68 +1,106 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-// UI Components (Ensure these are correctly mapped in your project)
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Card, CardContent } from "@/components/ui/card"; // Used for better structure
 
-// Icons & Utils
-import { AlertTriangle, LayoutGrid, Trash2, Calendar, Search, GraduationCap } from "lucide-react";
-import { Link } from "react-router-dom";
-import { createPageUrl } from "@/utils";
+import { AlertTriangle, LayoutGrid, Trash2, Loader2, Plus } from "lucide-react";
 
-// Local API/Mocks
 import { Catalog } from "@/localApi/catalog";
 import { Course } from "@/localApi/courses";
 import { Registration } from "@/localApi/registration";
 import { SavedSchedule } from "@/localApi/savedSchedule";
-// import { Preference } from "@/localApi/preferences"; // Not used, removed for clarity
 
-// Internal Components
 import CourseSelection from "../components/registration/CourseSelection";
 import WeeklyTimetable from "../components/registration/WeeklyTimetable";
 import SelectedCourses from "../components/registration/SelectedCourses";
 
 export default function RegistrationPage() {
+  const [user] = useState({ email: "local@test.com" });
   const [selectedBaseCode, setSelectedBaseCode] = useState(null);
   const [warning, setWarning] = useState(null);
-  const [activeSchedule, setActiveSchedule] = useState(null);
 
   const queryClient = useQueryClient();
 
-  /** -------------------------
-   * DATA FETCHING (useQuery)
-   * ------------------------- */
+  // -------------------------
+  // OPTIMIZED DATA FETCHING with staleTime and cacheTime
+  // -------------------------
+
   const { data: allCourses = [], isLoading: coursesLoading } = useQuery({
     queryKey: ["courses"],
     queryFn: () => Course.list(),
+    staleTime: 5 * 60 * 1000, // 5 minutes
+    cacheTime: 10 * 60 * 1000, // 10 minutes
   });
 
   const { data: catalog = [], isLoading: catalogLoading } = useQuery({
     queryKey: ["catalog"],
     queryFn: () => Catalog.list(),
+    staleTime: 2 * 60 * 1000,
   });
 
   const { data: savedSchedules = [], isLoading: schedulesLoading } = useQuery({
     queryKey: ["savedSchedules"],
     queryFn: () => SavedSchedule.list(),
-  });
-  
-  const { data: registrations = [], isLoading: registrationLoading } = useQuery({
-    queryKey: ["registrations"],
-    queryFn: () => Registration.list(),
+    staleTime: 1 * 60 * 1000,
   });
 
-  // Ensure savedSchedules is treated as an array
-  const safeSavedSchedules = useMemo(() => 
-    Array.isArray(savedSchedules) ? savedSchedules : Object.values(savedSchedules || {}), 
+  const { data: registrations = [], isLoading: registrationsLoading } = useQuery({
+    queryKey: ["registrations"],
+    queryFn: () => Registration.list(),
+    staleTime: 30 * 1000,
+  });
+
+  // -------------------------
+  // MEMOIZED COMPUTATIONS - Critical for performance
+  // -------------------------
+
+  const safeSavedSchedules = useMemo(
+    () => (Array.isArray(savedSchedules) ? savedSchedules : Object.values(savedSchedules || {})),
     [savedSchedules]
   );
 
-  /** -------------------------
-   * MUTATIONS
-   * ------------------------- */
+  const activeSchedule = useMemo(
+    () => safeSavedSchedules.find((s) => s.is_active) || null,
+    [safeSavedSchedules]
+  );
+
+  const catalogCourses = useMemo(
+    () =>
+      catalog
+        .map((c) => allCourses.find((course) => course.id === c.course_id))
+        .filter(Boolean),
+    [catalog, allCourses]
+  );
+
+  const registeredCourses = useMemo(
+    () =>
+      registrations
+        .filter((r) => r.status === "registered")
+        .map((r) => allCourses.find((c) => c.id === r.course_id))
+        .filter(Boolean),
+    [registrations, allCourses]
+  );
+
+  const registeredCourseIds = useMemo(
+    () => new Set(registeredCourses.map((c) => c.id)),
+    [registeredCourses]
+  );
+
+  const availableSections = useMemo(() => {
+    if (!selectedBaseCode) return [];
+    return allCourses.filter(
+      (c) =>
+        c.base_code === selectedBaseCode &&
+        !registrations.some((r) => r.course_id === c.id && r.status === "registered")
+    );
+  }, [selectedBaseCode, allCourses, registrations]);
+
+  // -------------------------
+  // OPTIMIZED MUTATIONS with optimistic updates
+  // -------------------------
+
   const registerMutation = useMutation({
     mutationFn: (course) =>
       Registration.add({
@@ -71,15 +109,49 @@ export default function RegistrationPage() {
         course_name: course.name,
         status: "registered",
       }),
-    onSuccess: () => {
+    onMutate: async (course) => {
+      await queryClient.cancelQueries(["registrations"]);
+      const previous = queryClient.getQueryData(["registrations"]);
+      
+      queryClient.setQueryData(["registrations"], (old = []) => [
+        ...old,
+        {
+          id: `temp-${Date.now()}`,
+          course_id: course.id,
+          course_code: course.code,
+          course_name: course.name,
+          status: "registered",
+        },
+      ]);
+      
+      return { previous };
+    },
+    onError: (err, course, context) => {
+      queryClient.setQueryData(["registrations"], context.previous);
+    },
+    onSettled: () => {
       queryClient.invalidateQueries(["registrations"]);
-      setWarning(null); // Clear warning on successful registration
     },
   });
 
   const unregisterMutation = useMutation({
     mutationFn: (id) => Registration.remove(id),
-    onSuccess: () => queryClient.invalidateQueries(["registrations"]),
+    onMutate: async (id) => {
+      await queryClient.cancelQueries(["registrations"]);
+      const previous = queryClient.getQueryData(["registrations"]);
+      
+      queryClient.setQueryData(["registrations"], (old = []) =>
+        old.filter((r) => r.id !== id)
+      );
+      
+      return { previous };
+    },
+    onError: (err, id, context) => {
+      queryClient.setQueryData(["registrations"], context.previous);
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries(["registrations"]);
+    },
   });
 
   const removeCatalogMutation = useMutation({
@@ -97,269 +169,296 @@ export default function RegistrationPage() {
     onSuccess: () => queryClient.invalidateQueries(["savedSchedules"]),
   });
 
-  /** -------------------------
-   * ACTIVE SCHEDULE / COURSE LISTS LOGIC
-   * ------------------------- */
+  // -------------------------
+  // CAMPUS CONFLICT CHECKER - Memoized
+  // -------------------------
 
-  // Set the active schedule on data load
-  useEffect(() => {
-    setActiveSchedule(safeSavedSchedules.find((s) => s.is_active) || null);
-  }, [safeSavedSchedules]);
+  const checkCampusConflict = useCallback(
+    (newCourse) => {
+      const conflicts = [];
 
-  // Use useMemo for computed lists to optimize re-renders
-  const catalogCourses = useMemo(() => 
-    catalog
-      .map((c) => allCourses.find((course) => course.id === c.course_id))
-      .filter(Boolean),
-    [catalog, allCourses]
-  );
+      newCourse.schedule.forEach((newSlot) => {
+        registeredCourses.forEach((existing) => {
+          if (existing.campus !== newCourse.campus) {
+            existing.schedule.forEach((oldSlot) => {
+              if (oldSlot.day === newSlot.day) {
+                const newStart = parseInt(newSlot.start_time.replace(":", ""));
+                const oldEnd = parseInt(oldSlot.end_time.replace(":", ""));
 
-  const registeredCourses = useMemo(() => 
-    registrations
-      .filter((r) => r.status === "registered")
-      .map((r) => allCourses.find((c) => c.id === r.course_id))
-      .filter(Boolean),
-    [registrations, allCourses]
-  );
-  
-  const getAvailableSections = (baseCode) => {
-    if (!baseCode) return [];
-    return allCourses.filter(
-      (c) =>
-        c.base_code === baseCode &&
-        !registrations.some((r) => r.course_id === c.id && r.status === "registered")
-    );
-  };
-
-  /** -------------------------
-   * CAMPUS CONFLICT CHECKER
-   * ------------------------- */
-
-  const checkCampusConflict = (newCourse) => {
-    const conflicts = [];
-    
-    // Check if newCourse has schedule data before iterating
-    if (!newCourse.schedule || !registeredCourses.length) return conflicts;
-
-    newCourse.schedule.forEach((newSlot) => {
-      registeredCourses.forEach((existing) => {
-        // Only check for conflict if campuses are different
-        if (existing.campus !== newCourse.campus) {
-          existing.schedule?.forEach((oldSlot) => {
-            if (oldSlot.day === newSlot.day) {
-              // Time parsing helper
-              const timeToMinutes = (time) => {
-                const [h, m] = time.split(':').map(Number);
-                return h * 60 + m;
-              };
-
-              const newStartMins = timeToMinutes(newSlot.start_time);
-              const oldEndMins = timeToMinutes(oldSlot.end_time);
-
-              // 60 minutes or less travel time conflict
-              if (Math.abs(newStartMins - oldEndMins) <= 60) {
-                conflicts.push({
-                  day: newSlot.day,
-                  course1: existing.code,
-                  course2: newCourse.code,
-                  campus1: existing.campus,
-                  campus2: newCourse.campus,
-                });
+                if (Math.abs(newStart - oldEnd) < 100) {
+                  conflicts.push({
+                    day: newSlot.day,
+                    course1: existing.code,
+                    course2: newCourse.code,
+                    campus1: existing.campus,
+                    campus2: newCourse.campus,
+                  });
+                }
               }
-            }
-          });
-        }
+            });
+          }
+        });
       });
-    });
-    return conflicts;
-  };
 
-  /** -------------------------
-   * USER ACTION HANDLERS
-   * ------------------------- */
+      return conflicts;
+    },
+    [registeredCourses]
+  );
 
-  const handleSelectSection = (course) => {
-    if (!course) return;
+  // -------------------------
+  // CALLBACK HANDLERS - Memoized to prevent re-renders
+  // -------------------------
 
-    // 1. Check if course is already registered
-    const isRegistered = registeredCourses.some(c => c.id === course.id);
-    if (isRegistered) {
-        setWarning(`🛑 Error: You are already registered for ${course.code}.`);
-        return;
+  const handleSelectSection = useCallback(
+    (course) => {
+      const conflicts = checkCampusConflict(course);
+
+      if (conflicts.length > 0) {
+        const c = conflicts[0];
+        setWarning(
+          `⚠️ Warning: ${c.course1} (${c.campus1}) and ${c.course2} (${c.campus2}) on ${c.day} are too close together.`
+        );
+      } else {
+        setWarning(null);
+      }
+
+      registerMutation.mutate(course);
+    },
+    [checkCampusConflict, registerMutation]
+  );
+
+  const handleRemoveCourse = useCallback(
+    (course) => {
+      const reg = registrations.find((r) => r.course_id === course.id);
+      if (reg) unregisterMutation.mutate(reg.id);
+    },
+    [registrations, unregisterMutation]
+  );
+
+  const handleRemoveFromCatalog = useCallback(
+    (course) => {
+      const item = catalog.find((c) => c.course_id === course.id);
+      if (item) removeCatalogMutation.mutate(item.id);
+      setSelectedBaseCode(null);
+    },
+    [catalog, removeCatalogMutation]
+  );
+
+  const handleLoadSchedule = useCallback(
+    async (scheduleId) => {
+      await activateScheduleMutation.mutateAsync(scheduleId);
+
+      // Clear current registrations
+      registrations.forEach((r) => unregisterMutation.mutate(r.id));
+
+      const selected = safeSavedSchedules.find((s) => s.id === scheduleId);
+
+      if (selected?.courses) {
+        selected.courses.forEach((c) => {
+          const course = allCourses.find((k) => k.id === c.course_id);
+          if (course) registerMutation.mutate(course);
+        });
+      }
+    },
+    [
+      activateScheduleMutation,
+      registrations,
+      unregisterMutation,
+      safeSavedSchedules,
+      allCourses,
+      registerMutation,
+    ]
+  );
+
+  const handleDeleteSchedule = useCallback(() => {
+    if (activeSchedule) {
+      deleteScheduleMutation.mutate(activeSchedule.id);
     }
+  }, [activeSchedule, deleteScheduleMutation]);
 
-    // 2. Check for conflicts
-    const conflicts = checkCampusConflict(course);
+  const handleBrowseCourses = useCallback(() => {
+    // Navigation would happen here if router was available
+    console.log('Navigate to courses page');
+  }, []);
 
-    if (conflicts.length > 0) {
-      const c = conflicts[0];
-      setWarning(
-        `⚠️ Warning: ${c.course1} (${c.campus1}) and ${c.course2} (${c.campus2}) on ${c.day} are too close (less than 1 hour travel time).`
-      );
-    } else {
-      setWarning(null); // Clear previous warnings if successful
-    }
+  // -------------------------
+  // LOADING STATE
+  // -------------------------
 
-    // 3. Register the course
-    registerMutation.mutate(course);
-  };
+  const isLoading =
+    coursesLoading || catalogLoading || schedulesLoading || registrationsLoading;
 
-  const handleRemoveCourse = (course) => {
-    const reg = registrations.find((r) => r.course_id === course.id);
-    if (reg) unregisterMutation.mutate(reg.id);
-  };
+  if (isLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-emerald-50 to-teal-50">
+        <div className="text-center">
+          <Loader2 className="w-12 h-12 animate-spin text-emerald-600 mx-auto mb-4" />
+          <p className="text-gray-600 font-medium">Loading course data...</p>
+        </div>
+      </div>
+    );
+  }
 
-  const handleRemoveFromCatalog = (course) => {
-    const item = catalog.find((c) => c.course_id === course.id);
-    if (item) removeCatalogMutation.mutate(item.id);
-    setSelectedBaseCode(null);
-  };
-
-  const handleLoadSchedule = async (scheduleId) => {
-    // 1. Activate the new schedule
-    await activateScheduleMutation.mutateAsync(scheduleId);
-
-    // 2. Clear current registrations (synchronous approach for UX)
-    // Note: In a real backend, this would often be a single API call for efficiency.
-    registrations.forEach((r) => unregisterMutation.mutate(r.id));
-    
-    // 3. Register courses from the new schedule
-    const selected = safeSavedSchedules.find((s) => s.id === scheduleId);
-    if (selected?.courses) {
-      selected.courses.forEach((c) => {
-        const course = allCourses.find((k) => k.id === c.course_id);
-        if (course) registerMutation.mutate(course);
-      });
-    }
-  };
-
-  /** -------------------------
-   * UI / UX
-   * ------------------------- */
-
-  // Show loading state if any main data is fetching
-  const isDataLoading = coursesLoading || catalogLoading || schedulesLoading || registrationLoading;
+  // -------------------------
+  // UI - Modern, Production-Ready Design
+  // -------------------------
 
   return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
-      <div className="max-w-[1600px] mx-auto space-y-8">
-        
-        {/* HEADER */}
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-3xl border border-slate-100 shadow-lg shadow-slate-200/50">
-          <div className="flex items-center gap-4">
-            <div className="p-3 bg-emerald-50 rounded-2xl">
-              <GraduationCap className="w-8 h-8 text-emerald-600" />
+    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-teal-50 to-cyan-50">
+      <div className="p-4 md:p-8 space-y-6">
+        <div className="max-w-[1800px] mx-auto">
+          {/* HEADER - Enhanced */}
+          <div className="mb-8">
+            <div className="flex flex-col lg:flex-row lg:justify-between lg:items-start gap-4 mb-4">
+              <div>
+                <h1 className="text-4xl md:text-5xl font-bold bg-gradient-to-r from-emerald-600 to-teal-600 bg-clip-text text-transparent mb-3">
+                  Course Registration
+                </h1>
+                <p className="text-gray-600 text-lg">
+                  Build your perfect schedule — click a course to explore sections
+                </p>
+              </div>
+
+              {safeSavedSchedules.length > 0 && (
+                <div className="flex items-center gap-3 bg-white/80 backdrop-blur-sm p-4 rounded-2xl border-2 border-emerald-100 shadow-lg">
+                  <LayoutGrid className="w-5 h-5 text-emerald-600 flex-shrink-0" />
+
+                  <Select
+                    value={activeSchedule?.id || ""}
+                    onValueChange={handleLoadSchedule}
+                  >
+                    <SelectTrigger className="w-48 bg-white border-emerald-200 text-gray-900 hover:border-emerald-400 transition-colors">
+                      <SelectValue placeholder="Select schedule" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {safeSavedSchedules.map((s) => (
+                        <SelectItem key={s.id} value={s.id}>
+                          <span className="font-medium">{s.name}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+
+                  {activeSchedule && (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleDeleteSchedule}
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  )}
+                </div>
+              )}
             </div>
-            <div>
-              <h1 className="text-3xl font-bold tracking-tight text-slate-900">Course Registration</h1>
-              <p className="text-slate-500 text-sm">Review your schedule and register for sections.</p>
+
+            {/* Stats Bar */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <div className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border-2 border-emerald-100 shadow-sm">
+                <p className="text-sm text-gray-600 mb-1">Registered</p>
+                <p className="text-2xl font-bold text-emerald-600">
+                  {registeredCourses.length}
+                </p>
+              </div>
+              <div className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border-2 border-teal-100 shadow-sm">
+                <p className="text-sm text-gray-600 mb-1">In Catalog</p>
+                <p className="text-2xl font-bold text-teal-600">
+                  {catalogCourses.length}
+                </p>
+              </div>
+              <div className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border-2 border-cyan-100 shadow-sm">
+                <p className="text-sm text-gray-600 mb-1">Total Credits</p>
+                <p className="text-2xl font-bold text-cyan-600">
+                  {registeredCourses.reduce((sum, c) => sum + (c.credits || 0), 0)}
+                </p>
+              </div>
+              <div className="bg-white/80 backdrop-blur-sm p-4 rounded-xl border-2 border-blue-100 shadow-sm">
+                <p className="text-sm text-gray-600 mb-1">Schedules</p>
+                <p className="text-2xl font-bold text-blue-600">
+                  {safeSavedSchedules.length}
+                </p>
+              </div>
             </div>
           </div>
 
-          {/* SCHEDULE SELECTOR */}
-          {safeSavedSchedules.length > 0 && (
-            <div className="flex items-center gap-3 mt-4 md:mt-0 p-1.5 bg-slate-50 rounded-xl border border-slate-100">
-              <Calendar className="w-4 h-4 text-slate-500 ml-1" />
-              <Select
-                value={activeSchedule?.id || ""}
-                onValueChange={handleLoadSchedule}
-              >
-                <SelectTrigger className="w-[200px] bg-transparent border-none text-slate-800 font-medium shadow-none focus:ring-0">
-                  <SelectValue placeholder="Load/Select Schedule" />
-                </SelectTrigger>
-                <SelectContent>
-                  {safeSavedSchedules.map((s) => (
-                    <SelectItem key={s.id} value={s.id}>
-                      {s.name} {s.is_active && "(Active)"}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              
-              {activeSchedule && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => deleteScheduleMutation.mutate(activeSchedule.id)}
-                  className="text-red-600 hover:bg-red-50 rounded-lg"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </Button>
-              )}
-            </div>
+          {/* WARNING - Enhanced */}
+          {warning && (
+            <Alert className="mb-6 border-2 border-amber-400 bg-gradient-to-r from-amber-50 to-yellow-50 shadow-lg animate-in fade-in slide-in-from-top-2 duration-300">
+              <AlertTriangle className="h-5 w-5 text-amber-600" />
+              <AlertDescription className="text-amber-900 font-medium text-base">
+                {warning}
+              </AlertDescription>
+            </Alert>
           )}
-        </header>
 
-        {/* LOADING STATE / WARNING */}
-        {isDataLoading && (
-          <Alert className="bg-blue-50 border-blue-200 text-blue-800 rounded-xl">
-             <AlertTriangle className="h-5 w-5 text-blue-600 animate-spin" />
-             <AlertDescription>Loading course data...</AlertDescription>
-          </Alert>
-        )}
-        
-        {warning && (
-          <Alert className="mb-6 border-2 border-amber-400 bg-amber-50 rounded-xl shadow-md animate-in fade-in slide-in-from-top-4">
-            <AlertTriangle className="h-5 w-5 text-amber-600" />
-            <AlertDescription className="text-amber-800 font-semibold">
-              {warning}
-            </AlertDescription>
-          </Alert>
-        )}
-
-        {/* MAIN GRID LAYOUT */}
-        <div className="grid lg:grid-cols-[380px_1fr] gap-8">
-          
-          {/* LEFT PANEL */}
-          <div className="space-y-8">
-            {/* Catalog Card */}
-            <Card className="rounded-[1.5rem] border-slate-100 shadow-xl shadow-slate-200/50 overflow-hidden">
-              <div className="p-4 border-b border-slate-100 flex flex-row justify-between items-center bg-emerald-600">
-                <h3 className="text-xl font-bold text-white flex items-center gap-2">
-                  <LayoutGrid className="w-5 h-5 text-emerald-300" /> My Catalog
-                </h3>
-                <Link to={createPageUrl("Courses")}>
-                  <Button size="sm" className="bg-white text-emerald-600 hover:bg-emerald-50 text-sm rounded-lg">
-                    Browse +
+          {/* MAIN GRID - Enhanced */}
+          <div className="grid lg:grid-cols-[320px_1fr] gap-6">
+            {/* LEFT PANEL - Enhanced */}
+            <div className="space-y-6">
+              {/* Catalog - Enhanced */}
+              <div className="rounded-2xl border-2 border-emerald-200 bg-white/90 backdrop-blur-sm shadow-xl overflow-hidden">
+                <div className="p-5 bg-gradient-to-r from-emerald-600 to-teal-600 flex justify-between items-center">
+                  <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <LayoutGrid className="w-5 h-5" />
+                    My Catalog
+                  </h3>
+                  <Button
+                    size="sm"
+                    onClick={handleBrowseCourses}
+                    className="bg-white text-emerald-600 hover:bg-emerald-50 font-semibold shadow-md transition-all hover:shadow-lg"
+                  >
+                    <Plus className="w-4 h-4 mr-1" />
+                    Browse
                   </Button>
-                </Link>
-              </div>
+                </div>
 
-              <CardContent className="p-4 max-h-[400px] overflow-y-auto bg-white">
-                {catalogCourses.length === 0 ? (
-                  <div className="text-center py-10">
-                    <Search className="w-10 h-10 text-slate-200 mx-auto mb-2" />
-                    <p className="text-slate-400 text-sm">No courses added to catalog. Click 'Browse +' above.</p>
-                  </div>
-                ) : (
+                <div className="p-4 max-h-[400px] overflow-y-auto custom-scrollbar">
                   <CourseSelection
                     catalogCourses={catalogCourses}
                     selectedBaseCode={selectedBaseCode}
                     onSelectBaseCode={setSelectedBaseCode}
                     onRemoveFromCatalog={handleRemoveFromCatalog}
-                    registeredCourseIds={registeredCourses.map((c) => c.id)}
+                    registeredCourseIds={Array.from(registeredCourseIds)}
                   />
-                )}
-              </CardContent>
-            </Card>
+                </div>
+              </div>
 
-            {/* Registered list */}
-            <SelectedCourses
-              courses={registeredCourses}
-              onRemove={handleRemoveCourse}
-            />
+              {/* Registered list - Enhanced */}
+              <SelectedCourses
+                courses={registeredCourses}
+                onRemove={handleRemoveCourse}
+              />
+            </div>
+
+            {/* RIGHT PANEL — TIMETABLE - Enhanced */}
+            <div className="rounded-2xl border-2 border-emerald-200 bg-white/90 backdrop-blur-sm shadow-xl overflow-hidden">
+              <WeeklyTimetable
+                registeredCourses={registeredCourses}
+                availableSections={availableSections}
+                onSelectSection={handleSelectSection}
+              />
+            </div>
           </div>
-
-          {/* RIGHT PANEL — TIMETABLE & SECTIONS */}
-          <WeeklyTimetable
-            registeredCourses={registeredCourses}
-            availableSections={
-              selectedBaseCode ? getAvailableSections(selectedBaseCode) : []
-            }
-            onSelectSection={handleSelectSection}
-          />
         </div>
       </div>
+
+      <style jsx>{`
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 8px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: #f1f5f9;
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: #10b981;
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+          background: #059669;
+        }
+      `}</style>
     </div>
   );
 }
