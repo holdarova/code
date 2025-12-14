@@ -1,809 +1,365 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
-// Local API
-import { AuthApi } from "/src/localApi/auth";
-import { Catalog } from "@/localApi/catalog";
-import { Registration } from "@/localApi/registration";
-import { Reviews } from "@/localApi/reviews";
-
-// UI Components (shadcn)
+// UI Components (Ensure these are correctly mapped in your project)
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import {
-  Search,
-  Plus,
-  Check,
-  MapPin,
-  Users,
-  BookOpen,
-  Filter,
-  X,
-  Star,
-  TrendingUp,
-  Info,
-  ChevronDown,
-  ChevronUp,
-  Loader2
-} from "lucide-react";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Card, CardContent } from "@/components/ui/card"; // Used for better structure
 
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+// Icons & Utils
+import { AlertTriangle, LayoutGrid, Trash2, Calendar, Search, GraduationCap } from "lucide-react";
+import { Link } from "react-router-dom";
+import { createPageUrl } from "@/utils";
 
-import { Checkbox } from "@/components/ui/checkbox";
+// Local API/Mocks
+import { Catalog } from "@/localApi/catalog";
+import { Course } from "@/localApi/courses";
+import { Registration } from "@/localApi/registration";
+import { SavedSchedule } from "@/localApi/savedSchedule";
+// import { Preference } from "@/localApi/preferences"; // Not used, removed for clarity
 
-// Dialogs
-import RatingDialog from "../components/courses/RatingDialog.jsx";
-import CourseRatings from "../components/courses/CourseRatings.jsx";
-import CourseDetailDialog from "../components/courses/CourseDetailDialog.jsx";
+// Internal Components
+import CourseSelection from "../components/registration/CourseSelection";
+import WeeklyTimetable from "../components/registration/WeeklyTimetable";
+import SelectedCourses from "../components/registration/SelectedCourses";
 
-// Chatbot
-import AIChatbot from "../components/chatbot/AIChatbot.jsx";
-
-export default function Courses() {
-  const [user, setUser] = useState(null);
-  const [searchTerm, setSearchTerm] = useState("");
-  const [allCourses, setAllCourses] = useState([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [categories, setCategories] = useState([]);
-  const [colleges, setColleges] = useState([]);
-  const [majors, setMajors] = useState([]);
-  
-  const LANGUAGE_OPTIONS = [
-    { label: "International (in English)", value: "국제어수업" },
-    { label: "General (in Korean)", value: "일반수업" },
-    { label: "Large Online + International", value: "중대형온라인강의 + 국제어" },
-    { label: "Large Online", value: "중대형온라인강의" },
-  ];
-
-  const [searchFilters, setSearchFilters] = useState({
-    category: "all",
-    college: "all",
-    major: "all",
-    language: "all",
-    campus: "all",
-    credits: "",
-    timeOfDay: "all",
-    days: [],
-    minRating: "all",
-  });
-
-  const [resultFilters, setResultFilters] = useState({
-    college: "all",
-    major: "all",
-    language: "all",
-    campus: "all",
-    credits: "all",
-    timeOfDay: "all",
-    days: [],
-    minRating: "all",
-  });
-
-  const [showSearchFilters, setShowSearchFilters] = useState(false);
-  const [showResultFilters, setShowResultFilters] = useState(false);
-  const [expandedCourses, setExpandedCourses] = useState({});
-
-  const [ratingDialogOpen, setRatingDialogOpen] = useState(false);
-  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
-  const [selectedCourse, setSelectedCourse] = useState(null);
+export default function RegistrationPage() {
+  const [selectedBaseCode, setSelectedBaseCode] = useState(null);
+  const [warning, setWarning] = useState(null);
+  const [activeSchedule, setActiveSchedule] = useState(null);
 
   const queryClient = useQueryClient();
-  const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
-  useEffect(() => {
-    setUser(AuthApi.me());
-  }, []);
+  /** -------------------------
+   * DATA FETCHING (useQuery)
+   * ------------------------- */
+  const { data: allCourses = [], isLoading: coursesLoading } = useQuery({
+    queryKey: ["courses"],
+    queryFn: () => Course.list(),
+  });
 
-  useEffect(() => {
-    const fetchCategories = async () => {
-      try {
-        const res = await fetch(`${baseUrl}/courses/categories`, {
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-        });
-
-        if (!res.ok) throw new Error(`Failed to load categories (${res.status})`);
-        const data = await res.json();
-        setCategories(data || []);
-      } catch (err) {
-        console.error("Error fetching categories", err);
-      }
-    };
-
-    fetchCategories();
-  }, [baseUrl]);
-
-  useEffect(() => {
-    const fetchColleges = async () => {
-      try {
-        const res = await fetch(`${baseUrl}/courses/colleges`, {
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-        });
-        if (!res.ok) throw new Error(`Failed to load colleges (${res.status})`);
-        const data = await res.json();
-        setColleges(data || []);
-      } catch (err) {
-        console.error("Error fetching colleges", err);
-      }
-    };
-
-    fetchColleges();
-  }, [baseUrl]);
-
-  useEffect(() => {
-    const fetchMajors = async () => {
-      if (searchFilters.college === "all") {
-        setMajors([]);
-        setSearchFilters((prev) => ({ ...prev, major: "all" }));
-        return;
-      }
-      try {
-        const res = await fetch(`${baseUrl}/courses/colleges/${searchFilters.college}/majors`, {
-          headers: {
-            "Content-Type": "application/json",
-            Accept: "application/json",
-          },
-        });
-        if (!res.ok) throw new Error(`Failed to load majors (${res.status})`);
-        const data = await res.json();
-        setMajors(data || []);
-      } catch (err) {
-        console.error("Error fetching majors", err);
-      }
-    };
-
-    fetchMajors();
-  }, [baseUrl, searchFilters.college]);
-
-  // ============================================================
-  // LOAD DATA
-  // ============================================================
-  const { data: catalog = [] } = useQuery({
+  const { data: catalog = [], isLoading: catalogLoading } = useQuery({
     queryKey: ["catalog"],
     queryFn: () => Catalog.list(),
   });
 
-  const { data: allReviews = [] } = useQuery({
-    queryKey: ["reviews"],
-    queryFn: () => Reviews.list(),
+  const { data: savedSchedules = [], isLoading: schedulesLoading } = useQuery({
+    queryKey: ["savedSchedules"],
+    queryFn: () => SavedSchedule.list(),
   });
-
-  const { data: registrations = [] } = useQuery({
+  
+  const { data: registrations = [], isLoading: registrationLoading } = useQuery({
     queryKey: ["registrations"],
     queryFn: () => Registration.list(),
   });
 
-  // ============================================================
-  // MEMOIZED HELPERS
-  // ============================================================
-  const getCourseReviews = useCallback((courseId) =>
-    allReviews.filter((r) => r.course_id === courseId), [allReviews]);
+  // Ensure savedSchedules is treated as an array
+  const safeSavedSchedules = useMemo(() => 
+    Array.isArray(savedSchedules) ? savedSchedules : Object.values(savedSchedules || {}), 
+    [savedSchedules]
+  );
 
-  const getCourseAvgRating = useCallback((courseId) => {
-    const rev = getCourseReviews(courseId);
-    if (rev.length === 0) return 0;
-    return rev.reduce((s, r) => s + r.rating, 0) / rev.length;
-  }, [getCourseReviews]);
-
-  const isInCatalog = useCallback((courseId) =>
-    catalog.some((c) => c.course_id === courseId), [catalog]);
-
-  const getCatalogItem = useCallback((courseId) =>
-    catalog.find((c) => c.course_id === courseId), [catalog]);
-
-  const getTimeOfDay = useCallback((course) => {
-    if (!course.schedule?.length) return "unknown";
-    const hour = parseInt(course.schedule[0].start_time.split(":")[0]);
-    if (hour < 12) return "morning";
-    if (hour < 17) return "afternoon";
-    return "evening";
-  }, []);
-
-  const courseMeetsDays = useCallback((course, selectedDays) => {
-    if (selectedDays.length === 0) return true;
-    return course.schedule?.some((slot) => selectedDays.includes(slot.day));
-  }, []);
-
-  const DAY_NAME_TO_INDEX = {
-    Monday: 1,
-    Tuesday: 2,
-    Wednesday: 3,
-    Thursday: 4,
-    Friday: 5,
-    Saturday: 6,
-    Sunday: 7,
-  };
-
-  const CAMPUS_LOOKUP = {
-    1: "HSSC",
-    2: "NSC",
-    3: "iCampus",
-  };
-
-  const normalizeCourse = useCallback((course) => {
-    const code = course.courseCode;
-    const shortCode = course.shortCourseCode;
-    const placements = course.timeRoomPlacements || [];
-
-    const majorsData = (course.majors || []).map((m) => ({
-      id: m.id,
-      name: m.major_name,
-      collegeId: m.college_id,
-    }));
-
-    const majorNames = majorsData.map((m) => m.name).filter(Boolean);
-    const collegeIds = majorsData.map((m) => m.collegeId).filter(Boolean);
-
-    const schedule = placements.map((slot) => ({
-      day: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][
-        (slot.day_of_week - 1) ?? 0
-      ] || "Monday",
-      start_time: (slot.start_time ?? "").toString().slice(0, 5),
-      end_time: (slot.end_time ?? "").toString().slice(0, 5),
-      room: slot.classroom || "TBD",
-    }));
-
-    return {
-      id: course.id || code,
-      code,
-      base_code: shortCode,
-      name: course.name_english || course.name_korean || code,
-      description: course.description_english || course.description_korean || "",
-      campus: CAMPUS_LOOKUP[course.campus] || "Unknown",
-      course_language: course.course_language || course.courseLanguage || null,
-      credits: Number(course.credits) || 0,
-      schedule,
-      instructor:
-        (course.instructor && course.instructor.instructor_name) ||
-        (course.instructor_id ? `Instructor ${course.instructor_id}` : "TBD"),
-      majors: majorsData,
-      majorNames,
-      collegeIds,
-      majorLabel: majorNames[0] || course.category || "General",
-      enrolled: course.enrolled || 0,
-      capacity: course.capacity || 0,
-    };
-  }, []);
-
-  const handleSearch = useCallback(async () => {
-    setIsSearching(true);
-    try {
-      const filterPayload = {
-        searchTerm: searchTerm || "",
-        category: searchFilters.category !== "all" ? searchFilters.category : null,
-        collegeId: searchFilters.college !== "all" ? Number(searchFilters.college) : null,
-        majorId: searchFilters.major !== "all" ? Number(searchFilters.major) : null,
-        courseLanguage:
-          searchFilters.language !== "all"
-            ? LANGUAGE_OPTIONS.find((o) => o.label === searchFilters.language)?.value ||
-              searchFilters.language
-            : null,
-        credits: searchFilters.credits ? Number(searchFilters.credits) : 0,
-        daysOfWeek: searchFilters.days
-          .map((d) => DAY_NAME_TO_INDEX[d])
-          .filter((v) => v !== undefined),
-        campus:
-          searchFilters.campus === "HSSC"
-            ? 1
-            : searchFilters.campus === "NSC"
-            ? 2
-            : searchFilters.campus === "iCampus"
-            ? 3
-            : 0,
-        timeOfDay:
-          searchFilters.timeOfDay !== "all"
-            ? searchFilters.timeOfDay.toUpperCase()
-            : "ALL",
-      };
-
-      const response = await fetch(`${baseUrl}/courses/search`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Accept: "application/json",
-        },
-        body: JSON.stringify(filterPayload),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Search failed with status ${response.status}`);
-      }
-
-      const data = await response.json();
-      const flattened = Object.values(data || {}).flat();
-      setAllCourses(flattened.map(normalizeCourse));
-    } catch (err) {
-      console.error("Error searching courses", err);
-    } finally {
-      setIsSearching(false);
-    }
-  }, [baseUrl, searchTerm, searchFilters, normalizeCourse, LANGUAGE_OPTIONS, DAY_NAME_TO_INDEX]);
-
-  // ============================================================
-  // MUTATIONS
-  // ============================================================
-  const addToCatalog = useMutation({
+  /** -------------------------
+   * MUTATIONS
+   * ------------------------- */
+  const registerMutation = useMutation({
     mutationFn: (course) =>
-      Catalog.add({
+      Registration.add({
         course_id: course.id,
         course_code: course.code,
         course_name: course.name,
-        base_code: course.base_code,
+        status: "registered",
       }),
-    onSuccess: () => queryClient.invalidateQueries(["catalog"]),
+    onSuccess: () => {
+      queryClient.invalidateQueries(["registrations"]);
+      setWarning(null); // Clear warning on successful registration
+    },
   });
 
-  const removeFromCatalog = useMutation({
+  const unregisterMutation = useMutation({
+    mutationFn: (id) => Registration.remove(id),
+    onSuccess: () => queryClient.invalidateQueries(["registrations"]),
+  });
+
+  const removeCatalogMutation = useMutation({
     mutationFn: (id) => Catalog.remove(id),
     onSuccess: () => queryClient.invalidateQueries(["catalog"]),
   });
 
-  const submitReview = useMutation({
-    mutationFn: (reviewData) =>
-      Reviews.add({
-        course_id: selectedCourse.id,
-        course_code: selectedCourse.code,
-        reviewer_name: user.full_name,
-        ...reviewData,
-      }),
-    onSuccess: () => {
-      queryClient.invalidateQueries(["reviews"]);
-      setRatingDialogOpen(false);
-      setSelectedCourse(null);
-    },
+  const activateScheduleMutation = useMutation({
+    mutationFn: (scheduleId) => SavedSchedule.activate(scheduleId),
+    onSuccess: () => queryClient.invalidateQueries(["savedSchedules"]),
   });
 
-  // ============================================================
-  // MEMOIZED FILTERING
-  // ============================================================
-  const filteredCourses = useMemo(() => {
-    return allCourses.filter((course) => {
-      const matchesCollege =
-        resultFilters.college === "all" ||
-        (course.collegeIds || []).includes(Number(resultFilters.college));
+  const deleteScheduleMutation = useMutation({
+    mutationFn: (scheduleId) => SavedSchedule.remove(scheduleId),
+    onSuccess: () => queryClient.invalidateQueries(["savedSchedules"]),
+  });
 
-      const matchesMajor =
-        resultFilters.major === "all" ||
-        (course.majorNames || []).includes(resultFilters.major) ||
-        course.majorLabel === resultFilters.major;
+  /** -------------------------
+   * ACTIVE SCHEDULE / COURSE LISTS LOGIC
+   * ------------------------- */
 
-      const matchesLanguage =
-        resultFilters.language === "all" ||
-        LANGUAGE_OPTIONS.some(
-          (opt) =>
-            opt.label === resultFilters.language &&
-            opt.value === course.course_language
-        );
+  // Set the active schedule on data load
+  useEffect(() => {
+    setActiveSchedule(safeSavedSchedules.find((s) => s.is_active) || null);
+  }, [safeSavedSchedules]);
 
-      const matchesCampus =
-        resultFilters.campus === "all" || course.campus === resultFilters.campus;
-
-      const matchesCredits =
-        resultFilters.credits === "all" ||
-        course.credits === Number(resultFilters.credits);
-
-      const matchesTime =
-        resultFilters.timeOfDay === "all" ||
-        getTimeOfDay(course) === resultFilters.timeOfDay;
-
-      const matchesDays = courseMeetsDays(course, resultFilters.days);
-
-      const avgRating = getCourseAvgRating(course.id);
-      const matchesRating =
-        resultFilters.minRating === "all" ||
-        avgRating >= Number(resultFilters.minRating);
-
-      return (
-        matchesCollege &&
-        matchesMajor &&
-        matchesLanguage &&
-        matchesCampus &&
-        matchesCredits &&
-        matchesTime &&
-        matchesDays &&
-        matchesRating
-      );
-    });
-  }, [allCourses, resultFilters, LANGUAGE_OPTIONS, getTimeOfDay, courseMeetsDays, getCourseAvgRating]);
-
-  const groupedCourses = useMemo(() => {
-    const grouped = {};
-    filteredCourses.forEach((course) => {
-      if (!grouped[course.base_code]) {
-        grouped[course.base_code] = [];
-      }
-      grouped[course.base_code].push(course);
-    });
-    return grouped;
-  }, [filteredCourses]);
-
-  const majorOptions = useMemo(() => 
-    [...new Set(
-      allCourses.flatMap((c) => c.majorNames || []).concat(allCourses.map((c) => c.majorLabel))
-    )].filter(Boolean),
-    [allCourses]
+  // Use useMemo for computed lists to optimize re-renders
+  const catalogCourses = useMemo(() => 
+    catalog
+      .map((c) => allCourses.find((course) => course.id === c.course_id))
+      .filter(Boolean),
+    [catalog, allCourses]
   );
 
-  const creditOptions = useMemo(() => 
-    [...new Set(allCourses.map((c) => c.credits))].sort(),
-    [allCourses]
+  const registeredCourses = useMemo(() => 
+    registrations
+      .filter((r) => r.status === "registered")
+      .map((r) => allCourses.find((c) => c.id === r.course_id))
+      .filter(Boolean),
+    [registrations, allCourses]
   );
+  
+  const getAvailableSections = (baseCode) => {
+    if (!baseCode) return [];
+    return allCourses.filter(
+      (c) =>
+        c.base_code === baseCode &&
+        !registrations.some((r) => r.course_id === c.id && r.status === "registered")
+    );
+  };
 
-  // ============================================================
-  // POPULAR COMBINATIONS
-  // ============================================================
-  const popularCombinations = useMemo(() => {
-    const combinations = {};
-    const byUser = {};
+  /** -------------------------
+   * CAMPUS CONFLICT CHECKER
+   * ------------------------- */
 
-    registrations.forEach((r) => {
-      if (!r.created_by) return;
-      if (!byUser[r.created_by]) byUser[r.created_by] = new Set();
-      byUser[r.created_by].add(r.course_code);
-    });
+  const checkCampusConflict = (newCourse) => {
+    const conflicts = [];
+    
+    // Check if newCourse has schedule data before iterating
+    if (!newCourse.schedule || !registeredCourses.length) return conflicts;
 
-    for (const user in byUser) {
-      const codes = [...byUser[user]];
-      for (let i = 0; i < codes.length; i++) {
-        for (let j = i + 1; j < codes.length; j++) {
-          const key = [codes[i], codes[j]].sort().join("-");
-          combinations[key] = (combinations[key] || 0) + 1;
+    newCourse.schedule.forEach((newSlot) => {
+      registeredCourses.forEach((existing) => {
+        // Only check for conflict if campuses are different
+        if (existing.campus !== newCourse.campus) {
+          existing.schedule?.forEach((oldSlot) => {
+            if (oldSlot.day === newSlot.day) {
+              // Time parsing helper
+              const timeToMinutes = (time) => {
+                const [h, m] = time.split(':').map(Number);
+                return h * 60 + m;
+              };
+
+              const newStartMins = timeToMinutes(newSlot.start_time);
+              const oldEndMins = timeToMinutes(oldSlot.end_time);
+
+              // 60 minutes or less travel time conflict
+              if (Math.abs(newStartMins - oldEndMins) <= 60) {
+                conflicts.push({
+                  day: newSlot.day,
+                  course1: existing.code,
+                  course2: newCourse.code,
+                  campus1: existing.campus,
+                  campus2: newCourse.campus,
+                });
+              }
+            }
+          });
         }
-      }
+      });
+    });
+    return conflicts;
+  };
+
+  /** -------------------------
+   * USER ACTION HANDLERS
+   * ------------------------- */
+
+  const handleSelectSection = (course) => {
+    if (!course) return;
+
+    // 1. Check if course is already registered
+    const isRegistered = registeredCourses.some(c => c.id === course.id);
+    if (isRegistered) {
+        setWarning(`🛑 Error: You are already registered for ${course.code}.`);
+        return;
     }
 
-    return Object.entries(combinations)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
-      .map(([key, count]) => {
-        const [a, b] = key.split("-");
-        return { code1: a, code2: b, count };
+    // 2. Check for conflicts
+    const conflicts = checkCampusConflict(course);
+
+    if (conflicts.length > 0) {
+      const c = conflicts[0];
+      setWarning(
+        `⚠️ Warning: ${c.course1} (${c.campus1}) and ${c.course2} (${c.campus2}) on ${c.day} are too close (less than 1 hour travel time).`
+      );
+    } else {
+      setWarning(null); // Clear previous warnings if successful
+    }
+
+    // 3. Register the course
+    registerMutation.mutate(course);
+  };
+
+  const handleRemoveCourse = (course) => {
+    const reg = registrations.find((r) => r.course_id === course.id);
+    if (reg) unregisterMutation.mutate(reg.id);
+  };
+
+  const handleRemoveFromCatalog = (course) => {
+    const item = catalog.find((c) => c.course_id === course.id);
+    if (item) removeCatalogMutation.mutate(item.id);
+    setSelectedBaseCode(null);
+  };
+
+  const handleLoadSchedule = async (scheduleId) => {
+    // 1. Activate the new schedule
+    await activateScheduleMutation.mutateAsync(scheduleId);
+
+    // 2. Clear current registrations (synchronous approach for UX)
+    // Note: In a real backend, this would often be a single API call for efficiency.
+    registrations.forEach((r) => unregisterMutation.mutate(r.id));
+    
+    // 3. Register courses from the new schedule
+    const selected = safeSavedSchedules.find((s) => s.id === scheduleId);
+    if (selected?.courses) {
+      selected.courses.forEach((c) => {
+        const course = allCourses.find((k) => k.id === c.course_id);
+        if (course) registerMutation.mutate(course);
       });
-  }, [registrations]);
+    }
+  };
 
-  const activeSearchFilters = useMemo(() => 
-    [
-      searchFilters.category !== "all",
-      searchFilters.college !== "all",
-      searchFilters.major !== "all",
-      searchFilters.language !== "all",
-      searchFilters.campus !== "all",
-      !!searchFilters.credits,
-      searchFilters.timeOfDay !== "all",
-      searchFilters.days.length > 0,
-      searchFilters.minRating !== "all",
-    ].filter(Boolean).length,
-    [searchFilters]
-  );
+  /** -------------------------
+   * UI / UX
+   * ------------------------- */
 
-  const activeResultFilters = useMemo(() => 
-    [
-      resultFilters.college !== "all",
-      resultFilters.major !== "all",
-      resultFilters.language !== "all",
-      resultFilters.campus !== "all",
-      resultFilters.credits !== "all",
-      resultFilters.timeOfDay !== "all",
-      resultFilters.days.length > 0,
-      resultFilters.minRating !== "all",
-    ].filter(Boolean).length,
-    [resultFilters]
-  );
+  // Show loading state if any main data is fetching
+  const isDataLoading = coursesLoading || catalogLoading || schedulesLoading || registrationLoading;
 
-  const clearSearchFilters = useCallback(() => {
-    setMajors([]);
-    setSearchFilters({
-      category: "all",
-      college: "all",
-      major: "all",
-      language: "all",
-      campus: "all",
-      credits: "",
-      timeOfDay: "all",
-      days: [],
-      minRating: "all",
-    });
-  }, []);
-
-  const clearResultFilters = useCallback(() =>
-    setResultFilters({
-      college: "all",
-      major: "all",
-      language: "all",
-      campus: "all",
-      credits: "all",
-      timeOfDay: "all",
-      days: [],
-      minRating: "all",
-    }),
-    []
-  );
-
-  const toggleCourseExpanded = useCallback((baseCode) => {
-    setExpandedCourses(prev => ({
-      ...prev,
-      [baseCode]: !prev[baseCode]
-    }));
-  }, []);
-
-  // ============================================================
-  // UI
-  // ============================================================
   return (
-    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-white to-green-50 p-4 md:p-8">
-      <div className="max-w-7xl mx-auto space-y-6">
-
-        {/* TITLE */}
-        <div className="text-center space-y-2">
-          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 tracking-tight">
-            Course Catalog
-          </h1>
-          <p className="text-gray-600 text-lg">
-            Browse, rate, and add courses to your schedule
-          </p>
-        </div>
-
-        {/* POPULAR COMBINATIONS */}
-        {popularCombinations.length > 0 && (
-          <Card className="p-6 border-2 border-emerald-600 bg-gradient-to-br from-emerald-50 to-green-50 shadow-lg rounded-2xl">
-            <div className="flex items-center gap-2 mb-4">
-              <TrendingUp className="w-5 h-5 text-emerald-600" />
-              <h3 className="text-lg font-bold text-gray-900">
-                Popular Course Combinations
-              </h3>
+    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
+      <div className="max-w-[1600px] mx-auto space-y-8">
+        
+        {/* HEADER */}
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center bg-white p-6 rounded-3xl border border-slate-100 shadow-lg shadow-slate-200/50">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-emerald-50 rounded-2xl">
+              <GraduationCap className="w-8 h-8 text-emerald-600" />
             </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
-              {popularCombinations.map((pair, idx) => (
-                <div
-                  key={idx}
-                  className="p-4 rounded-xl border-2 border-emerald-600 bg-white shadow-sm text-center hover:shadow-md transition-shadow"
-                >
-                  <p className="font-bold text-gray-900">{pair.code1}</p>
-                  <p className="text-emerald-600 text-sm font-semibold">+</p>
-                  <p className="font-bold text-gray-900">{pair.code2}</p>
-                  <Badge className="mt-2 bg-emerald-100 text-emerald-700 text-xs">
-                    {pair.count} students
-                  </Badge>
-                </div>
-              ))}
+            <div>
+              <h1 className="text-3xl font-bold tracking-tight text-slate-900">Course Registration</h1>
+              <p className="text-slate-500 text-sm">Review your schedule and register for sections.</p>
             </div>
-          </Card>
-        )}
-
-        {/* SEARCH + FILTERS */}
-        <Card className="p-6 rounded-2xl border-2 border-emerald-600 shadow-lg bg-white">
-          <div className="flex flex-col md:flex-row gap-4">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-              <Input
-                placeholder="Search by course name, code, or instructor..."
-                className="pl-10 h-12 rounded-xl border-2 border-gray-200 focus:border-emerald-600"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") handleSearch();
-                }}
-              />
-            </div>
-
-            <Button
-              className="h-12 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-6"
-              onClick={handleSearch}
-              disabled={isSearching}
-            >
-              {isSearching ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Searching...
-                </>
-              ) : (
-                <>
-                  <Search className="w-4 h-4 mr-2" />
-                  Search
-                </>
-              )}
-            </Button>
-
-            <Button
-              variant="outline"
-              className="h-12 rounded-xl border-2 border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-              onClick={() => setShowSearchFilters(!showSearchFilters)}
-            >
-              <Filter className="w-4 h-4 mr-2" /> 
-              Filters
-              {activeSearchFilters > 0 && (
-                <Badge className="ml-2 bg-emerald-600 text-white">
-                  {activeSearchFilters}
-                </Badge>
-              )}
-            </Button>
           </div>
 
-          {/* FILTER PANEL */}
-          {showSearchFilters && (
-            <div className="mt-6 pt-6 border-t-2 border-gray-100">
-              <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-bold text-gray-900">Search Filters</h3>
-                <Button 
-                  variant="ghost" 
-                  onClick={clearSearchFilters}
-                  className="text-gray-600 hover:text-gray-900"
+          {/* SCHEDULE SELECTOR */}
+          {safeSavedSchedules.length > 0 && (
+            <div className="flex items-center gap-3 mt-4 md:mt-0 p-1.5 bg-slate-50 rounded-xl border border-slate-100">
+              <Calendar className="w-4 h-4 text-slate-500 ml-1" />
+              <Select
+                value={activeSchedule?.id || ""}
+                onValueChange={handleLoadSchedule}
+              >
+                <SelectTrigger className="w-[200px] bg-transparent border-none text-slate-800 font-medium shadow-none focus:ring-0">
+                  <SelectValue placeholder="Load/Select Schedule" />
+                </SelectTrigger>
+                <SelectContent>
+                  {safeSavedSchedules.map((s) => (
+                    <SelectItem key={s.id} value={s.id}>
+                      {s.name} {s.is_active && "(Active)"}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              
+              {activeSchedule && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => deleteScheduleMutation.mutate(activeSchedule.id)}
+                  className="text-red-600 hover:bg-red-50 rounded-lg"
                 >
-                  <X className="w-4 h-4 mr-2" /> Clear All
+                  <Trash2 className="w-4 h-4" />
                 </Button>
+              )}
+            </div>
+          )}
+        </header>
+
+        {/* LOADING STATE / WARNING */}
+        {isDataLoading && (
+          <Alert className="bg-blue-50 border-blue-200 text-blue-800 rounded-xl">
+             <AlertTriangle className="h-5 w-5 text-blue-600 animate-spin" />
+             <AlertDescription>Loading course data...</AlertDescription>
+          </Alert>
+        )}
+        
+        {warning && (
+          <Alert className="mb-6 border-2 border-amber-400 bg-amber-50 rounded-xl shadow-md animate-in fade-in slide-in-from-top-4">
+            <AlertTriangle className="h-5 w-5 text-amber-600" />
+            <AlertDescription className="text-amber-800 font-semibold">
+              {warning}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* MAIN GRID LAYOUT */}
+        <div className="grid lg:grid-cols-[380px_1fr] gap-8">
+          
+          {/* LEFT PANEL */}
+          <div className="space-y-8">
+            {/* Catalog Card */}
+            <Card className="rounded-[1.5rem] border-slate-100 shadow-xl shadow-slate-200/50 overflow-hidden">
+              <div className="p-4 border-b border-slate-100 flex flex-row justify-between items-center bg-emerald-600">
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <LayoutGrid className="w-5 h-5 text-emerald-300" /> My Catalog
+                </h3>
+                <Link to={createPageUrl("Courses")}>
+                  <Button size="sm" className="bg-white text-emerald-600 hover:bg-emerald-50 text-sm rounded-lg">
+                    Browse +
+                  </Button>
+                </Link>
               </div>
 
-              {/* FILTER GRID */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {/* Category */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Category</label>
-                  <Select
-                    value={searchFilters.category}
-                    onValueChange={(v) =>
-                      setSearchFilters((f) => ({ ...f, category: v }))
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl h-10">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60">
-                      <SelectItem value="all">All</SelectItem>
-                      {categories.map((cat) => (
-                        <SelectItem key={cat} value={cat}>
-                          {cat}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* College */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">College</label>
-                  <Select
-                    value={searchFilters.college}
-                    onValueChange={(v) =>
-                      setSearchFilters((f) => ({ ...f, college: v, major: "all" }))
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl h-10">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60">
-                      <SelectItem value="all">All</SelectItem>
-                      {colleges.map((c) => (
-                        <SelectItem key={c.id} value={String(c.id)}>
-                          {c.name || c.college_name || c.collegeName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Major */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Major</label>
-                  <Select
-                    value={searchFilters.major}
-                    onValueChange={(v) =>
-                      setSearchFilters((f) => ({ ...f, major: v }))
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl h-10" disabled={majors.length === 0}>
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60">
-                      <SelectItem value="all">All</SelectItem>
-                      {majors.map((m) => (
-                        <SelectItem key={m.id} value={String(m.id)}>
-                          {m.name || m.major_name || m.majorName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Language */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Language</label>
-                  <Select
-                    value={searchFilters.language}
-                    onValueChange={(v) =>
-                      setSearchFilters((f) => ({ ...f, language: v }))
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl h-10">
-                      <SelectValue placeholder="Any" />
-                    </SelectTrigger>
-                    <SelectContent className="max-h-60">
-                      <SelectItem value="all">Any</SelectItem>
-                      {LANGUAGE_OPTIONS.map((opt) => (
-                        <SelectItem key={opt.label} value={opt.label}>
-                          {opt.label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Campus */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Campus</label>
-                  <Select
-                    value={searchFilters.campus}
-                    onValueChange={(v) =>
-                      setSearchFilters((f) => ({ ...f, campus: v }))
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl h-10">
-                      <SelectValue placeholder="Select" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All</SelectItem>
-                      <SelectItem value="HSSC">HSSC</SelectItem>
-                      <SelectItem value="NSC">NSC</SelectItem>
-                      <SelectItem value="iCampus">iCampus</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Credits */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Credits</label>
-                  <Input
-                    type="number"
-                    placeholder="e.g. 3"
-                    value={searchFilters.credits}
-                    onChange={(e) =>
-                      setSearchFilters((f) => ({ ...f, credits: e.target.value }))
-                    }
-                    className="rounded-xl h-10"
+              <CardContent className="p-4 max-h-[400px] overflow-y-auto bg-white">
+                {catalogCourses.length === 0 ? (
+                  <div className="text-center py-10">
+                    <Search className="w-10 h-10 text-slate-200 mx-auto mb-2" />
+                    <p className="text-slate-400 text-sm">No courses added to catalog. Click 'Browse +' above.</p>
+                  </div>
+                ) : (
+                  <CourseSelection
+                    catalogCourses={catalogCourses}
+                    selectedBaseCode={selectedBaseCode}
+                    onSelectBaseCode={setSelectedBaseCode}
+                    onRemoveFromCatalog={handleRemoveFromCatalog}
+                    registeredCourseIds={registeredCourses.map((c) => c.id)}
                   />
-                </div>
+                )}
+              </CardContent>
+            </Card>
 
-                {/* Time of Day */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Time of Day</label>
-                  <Select
-                    value={searchFilters.timeOfDay}
-                    onValueChange={(v) =>
-                      setSearchFilters((f) => ({ ...f, timeOfDay: v }))
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl h-10">
-                      <SelectValue placeholder="Any" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">Any</SelectItem>
-                      <SelectItem value="morning">Morning</SelectItem>
-                      <SelectItem value="afternoon">Afternoon</SelectItem>
-                      <SelectItem value="evening">Evening</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+            {/* Registered list */}
+            <SelectedCourses
+              courses={registeredCourses}
+              onRemove={handleRemoveCourse}
+            />
+          </div>
 
-                {/* Rating */}
-                <div>
-                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Min Rating</label>
-                  <Select
-                    value={searchFilters.minRating}
-                    onValueChange={(v) =>
-                      setSearchFilters((f) => ({ ...f, minRating: v }))
-                    }
-                  >
-                    <SelectTrigger className="rounded-xl h-10">
-                      <SelectValue placeholder="Any" />
+          {/* RIGHT PANEL — TIMETABLE & SECTIONS */}
+          <WeeklyTimetable
+            registeredCourses={registeredCourses}
+            availableSections={
+              selectedBaseCode ? getAvailableSections(selectedBaseCode) : []
+            }
+            onSelectSection={handleSelectSection}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
