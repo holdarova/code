@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 
 // Local API
@@ -24,8 +24,9 @@ import {
   Star,
   TrendingUp,
   Info,
-  Loader2,
-  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Loader2
 } from "lucide-react";
 
 import {
@@ -47,50 +48,47 @@ import CourseDetailDialog from "../components/courses/CourseDetailDialog.jsx";
 import AIChatbot from "../components/chatbot/AIChatbot.jsx";
 
 export default function Courses() {
-  // ============================================================
-  // STATE
-  // ============================================================
   const [user, setUser] = useState(null);
-
   const [searchTerm, setSearchTerm] = useState("");
   const [allCourses, setAllCourses] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
-
   const [categories, setCategories] = useState([]);
   const [colleges, setColleges] = useState([]);
+  const [majors, setMajors] = useState([]);
+  
+  const LANGUAGE_OPTIONS = [
+    { label: "International (in English)", value: "국제어수업" },
+    { label: "General (in Korean)", value: "일반수업" },
+    { label: "Large Online + International", value: "중대형온라인강의 + 국제어" },
+    { label: "Large Online", value: "중대형온라인강의" },
+  ];
 
-  const LANGUAGE_OPTIONS = useMemo(
-    () => [
-      { label: "International (in English)", value: "국제어수업" },
-      { label: "General (in Korean)", value: "일반수업" },
-      { label: "Large Online + International", value: "중대형온라인강의 + 국제어" },
-      { label: "Large Online", value: "중대형온라인강의" },
-    ],
-    []
-  );
-
-  // Major + Rating olib tashlandi
   const [searchFilters, setSearchFilters] = useState({
     category: "all",
     college: "all",
+    major: "all",
     language: "all",
     campus: "all",
     credits: "",
     timeOfDay: "all",
     days: [],
+    minRating: "all",
   });
 
   const [resultFilters, setResultFilters] = useState({
     college: "all",
+    major: "all",
     language: "all",
     campus: "all",
     credits: "all",
     timeOfDay: "all",
     days: [],
+    minRating: "all",
   });
 
   const [showSearchFilters, setShowSearchFilters] = useState(false);
   const [showResultFilters, setShowResultFilters] = useState(false);
+  const [expandedCourses, setExpandedCourses] = useState({});
 
   const [ratingDialogOpen, setRatingDialogOpen] = useState(false);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
@@ -99,35 +97,28 @@ export default function Courses() {
   const queryClient = useQueryClient();
   const baseUrl = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
 
-  // ============================================================
-  // AUTH
-  // ============================================================
   useEffect(() => {
-    try {
-      // NOTE: old code "auth.me()" edi — productionda yiqilishi mumkin.
-      setUser(AuthApi?.me?.() ?? null);
-    } catch {
-      setUser(null);
-    }
+    setUser(AuthApi.me());
   }, []);
 
-  // ============================================================
-  // LOOKUPS (categories, colleges)
-  // ============================================================
   useEffect(() => {
     const fetchCategories = async () => {
       try {
         const res = await fetch(`${baseUrl}/courses/categories`, {
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
         });
+
         if (!res.ok) throw new Error(`Failed to load categories (${res.status})`);
         const data = await res.json();
-        setCategories(Array.isArray(data) ? data : []);
+        setCategories(data || []);
       } catch (err) {
         console.error("Error fetching categories", err);
-        setCategories([]);
       }
     };
+
     fetchCategories();
   }, [baseUrl]);
 
@@ -135,21 +126,49 @@ export default function Courses() {
     const fetchColleges = async () => {
       try {
         const res = await fetch(`${baseUrl}/courses/colleges`, {
-          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
         });
         if (!res.ok) throw new Error(`Failed to load colleges (${res.status})`);
         const data = await res.json();
-        setColleges(Array.isArray(data) ? data : []);
+        setColleges(data || []);
       } catch (err) {
         console.error("Error fetching colleges", err);
-        setColleges([]);
       }
     };
+
     fetchColleges();
   }, [baseUrl]);
 
+  useEffect(() => {
+    const fetchMajors = async () => {
+      if (searchFilters.college === "all") {
+        setMajors([]);
+        setSearchFilters((prev) => ({ ...prev, major: "all" }));
+        return;
+      }
+      try {
+        const res = await fetch(`${baseUrl}/courses/colleges/${searchFilters.college}/majors`, {
+          headers: {
+            "Content-Type": "application/json",
+            Accept: "application/json",
+          },
+        });
+        if (!res.ok) throw new Error(`Failed to load majors (${res.status})`);
+        const data = await res.json();
+        setMajors(data || []);
+      } catch (err) {
+        console.error("Error fetching majors", err);
+      }
+    };
+
+    fetchMajors();
+  }, [baseUrl, searchFilters.college]);
+
   // ============================================================
-  // LOAD DATA (React Query)
+  // LOAD DATA
   // ============================================================
   const { data: catalog = [] } = useQuery({
     queryKey: ["catalog"],
@@ -167,121 +186,97 @@ export default function Courses() {
   });
 
   // ============================================================
-  // HELPERS
+  // MEMOIZED HELPERS
   // ============================================================
-  const getCourseReviews = useCallback(
-    (courseId) => allReviews.filter((r) => r.course_id === courseId),
-    [allReviews]
-  );
+  const getCourseReviews = useCallback((courseId) =>
+    allReviews.filter((r) => r.course_id === courseId), [allReviews]);
 
-  const getCourseAvgRating = useCallback(
-    (courseId) => {
-      const rev = allReviews.filter((r) => r.course_id === courseId);
-      if (rev.length === 0) return 0;
-      return rev.reduce((s, r) => s + Number(r.rating || 0), 0) / rev.length;
-    },
-    [allReviews]
-  );
+  const getCourseAvgRating = useCallback((courseId) => {
+    const rev = getCourseReviews(courseId);
+    if (rev.length === 0) return 0;
+    return rev.reduce((s, r) => s + r.rating, 0) / rev.length;
+  }, [getCourseReviews]);
 
-  const isInCatalog = useCallback(
-    (courseId) => catalog.some((c) => c.course_id === courseId),
-    [catalog]
-  );
+  const isInCatalog = useCallback((courseId) =>
+    catalog.some((c) => c.course_id === courseId), [catalog]);
 
-  const getCatalogItem = useCallback(
-    (courseId) => catalog.find((c) => c.course_id === courseId),
-    [catalog]
-  );
+  const getCatalogItem = useCallback((courseId) =>
+    catalog.find((c) => c.course_id === courseId), [catalog]);
 
   const getTimeOfDay = useCallback((course) => {
     if (!course.schedule?.length) return "unknown";
-    const hour = parseInt(course.schedule[0].start_time?.split(":")?.[0] || "0", 10);
+    const hour = parseInt(course.schedule[0].start_time.split(":")[0]);
     if (hour < 12) return "morning";
     if (hour < 17) return "afternoon";
     return "evening";
   }, []);
 
   const courseMeetsDays = useCallback((course, selectedDays) => {
-    if (!selectedDays?.length) return true;
+    if (selectedDays.length === 0) return true;
     return course.schedule?.some((slot) => selectedDays.includes(slot.day));
   }, []);
 
-  const DAY_NAME_TO_INDEX = useMemo(
-    () => ({
-      Monday: 1,
-      Tuesday: 2,
-      Wednesday: 3,
-      Thursday: 4,
-      Friday: 5,
-      Saturday: 6,
-      Sunday: 7,
-    }),
-    []
-  );
+  const DAY_NAME_TO_INDEX = {
+    Monday: 1,
+    Tuesday: 2,
+    Wednesday: 3,
+    Thursday: 4,
+    Friday: 5,
+    Saturday: 6,
+    Sunday: 7,
+  };
 
-  const CAMPUS_LOOKUP = useMemo(
-    () => ({
-      1: "HSSC",
-      2: "NSC",
-      3: "iCampus",
-    }),
-    []
-  );
+  const CAMPUS_LOOKUP = {
+    1: "HSSC",
+    2: "NSC",
+    3: "iCampus",
+  };
 
-  const normalizeCourse = useCallback(
-    (course) => {
-      const code = course.courseCode;
-      const shortCode = course.shortCourseCode;
+  const normalizeCourse = useCallback((course) => {
+    const code = course.courseCode;
+    const shortCode = course.shortCourseCode;
+    const placements = course.timeRoomPlacements || [];
 
-      const placements = course.timeRoomPlacements || [];
+    const majorsData = (course.majors || []).map((m) => ({
+      id: m.id,
+      name: m.major_name,
+      collegeId: m.college_id,
+    }));
 
-      const majorsData = (course.majors || []).map((m) => ({
-        id: m.id,
-        name: m.major_name,
-        collegeId: m.college_id,
-      }));
+    const majorNames = majorsData.map((m) => m.name).filter(Boolean);
+    const collegeIds = majorsData.map((m) => m.collegeId).filter(Boolean);
 
-      const majorNames = majorsData.map((m) => m.name).filter(Boolean);
-      const collegeIds = majorsData.map((m) => m.collegeId).filter(Boolean);
+    const schedule = placements.map((slot) => ({
+      day: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][
+        (slot.day_of_week - 1) ?? 0
+      ] || "Monday",
+      start_time: (slot.start_time ?? "").toString().slice(0, 5),
+      end_time: (slot.end_time ?? "").toString().slice(0, 5),
+      room: slot.classroom || "TBD",
+    }));
 
-      const schedule = placements.map((slot) => ({
-        day:
-          ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"][
-            (slot.day_of_week ?? 1) - 1
-          ] || "Monday",
-        start_time: (slot.start_time ?? "").toString().slice(0, 5),
-        end_time: (slot.end_time ?? "").toString().slice(0, 5),
-        room: slot.classroom || "TBD",
-      }));
+    return {
+      id: course.id || code,
+      code,
+      base_code: shortCode,
+      name: course.name_english || course.name_korean || code,
+      description: course.description_english || course.description_korean || "",
+      campus: CAMPUS_LOOKUP[course.campus] || "Unknown",
+      course_language: course.course_language || course.courseLanguage || null,
+      credits: Number(course.credits) || 0,
+      schedule,
+      instructor:
+        (course.instructor && course.instructor.instructor_name) ||
+        (course.instructor_id ? `Instructor ${course.instructor_id}` : "TBD"),
+      majors: majorsData,
+      majorNames,
+      collegeIds,
+      majorLabel: majorNames[0] || course.category || "General",
+      enrolled: course.enrolled || 0,
+      capacity: course.capacity || 0,
+    };
+  }, []);
 
-      return {
-        id: course.id || code,
-        code,
-        base_code: shortCode,
-        name: course.name_english || course.name_korean || code,
-        description: course.description_english || course.description_korean || "",
-        campus: CAMPUS_LOOKUP[course.campus] || "Unknown",
-        course_language: course.course_language || course.courseLanguage || null,
-        credits: Number(course.credits) || 0,
-        schedule,
-        instructor:
-          (course.instructor && course.instructor.instructor_name) ||
-          (course.instructor_id ? `Instructor ${course.instructor_id}` : "TBD"),
-        majors: majorsData,
-        majorNames,
-        collegeIds,
-        // major filter olib tashlandi, lekin labelni UI badge uchun saqlab qoldim
-        majorLabel: majorNames[0] || course.category || "General",
-        enrolled: Number(course.enrolled) || 0,
-        capacity: Number(course.capacity) || 0,
-      };
-    },
-    [CAMPUS_LOOKUP]
-  );
-
-  // ============================================================
-  // SEARCH
-  // ============================================================
   const handleSearch = useCallback(async () => {
     setIsSearching(true);
     try {
@@ -289,14 +284,14 @@ export default function Courses() {
         searchTerm: searchTerm || "",
         category: searchFilters.category !== "all" ? searchFilters.category : null,
         collegeId: searchFilters.college !== "all" ? Number(searchFilters.college) : null,
-        majorId: null, // major olib tashlandi
+        majorId: searchFilters.major !== "all" ? Number(searchFilters.major) : null,
         courseLanguage:
           searchFilters.language !== "all"
             ? LANGUAGE_OPTIONS.find((o) => o.label === searchFilters.language)?.value ||
               searchFilters.language
             : null,
         credits: searchFilters.credits ? Number(searchFilters.credits) : 0,
-        daysOfWeek: (searchFilters.days || [])
+        daysOfWeek: searchFilters.days
           .map((d) => DAY_NAME_TO_INDEX[d])
           .filter((v) => v !== undefined),
         campus:
@@ -308,12 +303,17 @@ export default function Courses() {
             ? 3
             : 0,
         timeOfDay:
-          searchFilters.timeOfDay !== "all" ? searchFilters.timeOfDay.toUpperCase() : "ALL",
+          searchFilters.timeOfDay !== "all"
+            ? searchFilters.timeOfDay.toUpperCase()
+            : "ALL",
       };
 
       const response = await fetch(`${baseUrl}/courses/search`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
         body: JSON.stringify(filterPayload),
       });
 
@@ -326,24 +326,10 @@ export default function Courses() {
       setAllCourses(flattened.map(normalizeCourse));
     } catch (err) {
       console.error("Error searching courses", err);
-      setAllCourses([]);
     } finally {
       setIsSearching(false);
     }
-  }, [
-    baseUrl,
-    DAY_NAME_TO_INDEX,
-    LANGUAGE_OPTIONS,
-    normalizeCourse,
-    searchFilters,
-    searchTerm,
-  ]);
-
-  // Page ochilishi bilan course list chiqsin (default list)
-  useEffect(() => {
-    handleSearch();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [baseUrl, searchTerm, searchFilters, normalizeCourse, LANGUAGE_OPTIONS, DAY_NAME_TO_INDEX]);
 
   // ============================================================
   // MUTATIONS
@@ -369,7 +355,7 @@ export default function Courses() {
       Reviews.add({
         course_id: selectedCourse.id,
         course_code: selectedCourse.code,
-        reviewer_name: user?.full_name || "Anonymous",
+        reviewer_name: user.full_name,
         ...reviewData,
       }),
     onSuccess: () => {
@@ -380,7 +366,7 @@ export default function Courses() {
   });
 
   // ============================================================
-  // FILTERING (Result Filters) — major + rating olib tashlandi
+  // MEMOIZED FILTERING
   // ============================================================
   const filteredCourses = useMemo(() => {
     return allCourses.filter((course) => {
@@ -388,42 +374,75 @@ export default function Courses() {
         resultFilters.college === "all" ||
         (course.collegeIds || []).includes(Number(resultFilters.college));
 
+      const matchesMajor =
+        resultFilters.major === "all" ||
+        (course.majorNames || []).includes(resultFilters.major) ||
+        course.majorLabel === resultFilters.major;
+
       const matchesLanguage =
         resultFilters.language === "all" ||
         LANGUAGE_OPTIONS.some(
-          (opt) => opt.label === resultFilters.language && opt.value === course.course_language
+          (opt) =>
+            opt.label === resultFilters.language &&
+            opt.value === course.course_language
         );
 
       const matchesCampus =
         resultFilters.campus === "all" || course.campus === resultFilters.campus;
 
       const matchesCredits =
-        resultFilters.credits === "all" || course.credits === Number(resultFilters.credits);
+        resultFilters.credits === "all" ||
+        course.credits === Number(resultFilters.credits);
 
       const matchesTime =
-        resultFilters.timeOfDay === "all" || getTimeOfDay(course) === resultFilters.timeOfDay;
+        resultFilters.timeOfDay === "all" ||
+        getTimeOfDay(course) === resultFilters.timeOfDay;
 
       const matchesDays = courseMeetsDays(course, resultFilters.days);
 
-      return matchesCollege && matchesLanguage && matchesCampus && matchesCredits && matchesTime && matchesDays;
+      const avgRating = getCourseAvgRating(course.id);
+      const matchesRating =
+        resultFilters.minRating === "all" ||
+        avgRating >= Number(resultFilters.minRating);
+
+      return (
+        matchesCollege &&
+        matchesMajor &&
+        matchesLanguage &&
+        matchesCampus &&
+        matchesCredits &&
+        matchesTime &&
+        matchesDays &&
+        matchesRating
+      );
     });
-  }, [LANGUAGE_OPTIONS, allCourses, courseMeetsDays, getTimeOfDay, resultFilters]);
+  }, [allCourses, resultFilters, LANGUAGE_OPTIONS, getTimeOfDay, courseMeetsDays, getCourseAvgRating]);
 
   const groupedCourses = useMemo(() => {
     const grouped = {};
     filteredCourses.forEach((course) => {
-      if (!grouped[course.base_code]) grouped[course.base_code] = [];
+      if (!grouped[course.base_code]) {
+        grouped[course.base_code] = [];
+      }
       grouped[course.base_code].push(course);
     });
     return grouped;
   }, [filteredCourses]);
 
-  const creditOptions = useMemo(() => {
-    return [...new Set(allCourses.map((c) => c.credits))].sort((a, b) => a - b);
-  }, [allCourses]);
+  const majorOptions = useMemo(() => 
+    [...new Set(
+      allCourses.flatMap((c) => c.majorNames || []).concat(allCourses.map((c) => c.majorLabel))
+    )].filter(Boolean),
+    [allCourses]
+  );
+
+  const creditOptions = useMemo(() => 
+    [...new Set(allCourses.map((c) => c.credits))].sort(),
+    [allCourses]
+  );
 
   // ============================================================
-  // POPULAR COMBINATIONS (memo)
+  // POPULAR COMBINATIONS
   // ============================================================
   const popularCombinations = useMemo(() => {
     const combinations = {};
@@ -435,8 +454,8 @@ export default function Courses() {
       byUser[r.created_by].add(r.course_code);
     });
 
-    for (const uid in byUser) {
-      const codes = [...byUser[uid]];
+    for (const user in byUser) {
+      const codes = [...byUser[user]];
       for (let i = 0; i < codes.length; i++) {
         for (let j = i + 1; j < codes.length; j++) {
           const key = [codes[i], codes[j]].sort().join("-");
@@ -454,102 +473,107 @@ export default function Courses() {
       });
   }, [registrations]);
 
-  const activeSearchFilters = useMemo(() => {
-    return [
+  const activeSearchFilters = useMemo(() => 
+    [
       searchFilters.category !== "all",
       searchFilters.college !== "all",
+      searchFilters.major !== "all",
       searchFilters.language !== "all",
       searchFilters.campus !== "all",
       !!searchFilters.credits,
       searchFilters.timeOfDay !== "all",
-      (searchFilters.days || []).length > 0,
-    ].filter(Boolean).length;
-  }, [searchFilters]);
+      searchFilters.days.length > 0,
+      searchFilters.minRating !== "all",
+    ].filter(Boolean).length,
+    [searchFilters]
+  );
 
-  const activeResultFilters = useMemo(() => {
-    return [
+  const activeResultFilters = useMemo(() => 
+    [
       resultFilters.college !== "all",
+      resultFilters.major !== "all",
       resultFilters.language !== "all",
       resultFilters.campus !== "all",
       resultFilters.credits !== "all",
       resultFilters.timeOfDay !== "all",
-      (resultFilters.days || []).length > 0,
-    ].filter(Boolean).length;
-  }, [resultFilters]);
+      resultFilters.days.length > 0,
+      resultFilters.minRating !== "all",
+    ].filter(Boolean).length,
+    [resultFilters]
+  );
 
   const clearSearchFilters = useCallback(() => {
+    setMajors([]);
     setSearchFilters({
       category: "all",
       college: "all",
+      major: "all",
       language: "all",
       campus: "all",
       credits: "",
       timeOfDay: "all",
       days: [],
+      minRating: "all",
     });
   }, []);
 
-  const clearResultFilters = useCallback(() => {
+  const clearResultFilters = useCallback(() =>
     setResultFilters({
       college: "all",
+      major: "all",
       language: "all",
       campus: "all",
       credits: "all",
       timeOfDay: "all",
       days: [],
-    });
+      minRating: "all",
+    }),
+    []
+  );
+
+  const toggleCourseExpanded = useCallback((baseCode) => {
+    setExpandedCourses(prev => ({
+      ...prev,
+      [baseCode]: !prev[baseCode]
+    }));
   }, []);
 
   // ============================================================
   // UI
   // ============================================================
-  const totalGroups = Object.keys(groupedCourses).length;
-
   return (
-    <div className="p-4 md:p-8 space-y-6">
-      <div className="max-w-7xl mx-auto">
-        {/* TITLE */}
-        <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
-          <div>
-            <h1 className="text-4xl font-bold text-gray-900 tracking-tight">Course Catalog</h1>
-            <p className="text-gray-600 mt-1">
-              Browse, rate, and add courses to your schedule
-            </p>
-          </div>
+    <div className="min-h-screen bg-gradient-to-br from-emerald-50 via-white to-green-50 p-4 md:p-8">
+      <div className="max-w-7xl mx-auto space-y-6">
 
-          {/* Quick action: Refresh */}
-          <div className="flex gap-2">
-            <Button
-              variant="outline"
-              className="rounded-xl border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-              onClick={handleSearch}
-              disabled={isSearching}
-              aria-label="Refresh course list"
-              title="Refresh"
-            >
-              {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-              <span className="ml-2 hidden sm:inline">{isSearching ? "Refreshing..." : "Refresh"}</span>
-            </Button>
-          </div>
+        {/* TITLE */}
+        <div className="text-center space-y-2">
+          <h1 className="text-4xl md:text-5xl font-bold text-gray-900 tracking-tight">
+            Course Catalog
+          </h1>
+          <p className="text-gray-600 text-lg">
+            Browse, rate, and add courses to your schedule
+          </p>
         </div>
 
         {/* POPULAR COMBINATIONS */}
         {popularCombinations.length > 0 && (
-          <Card className="p-6 border-2 border-emerald-600 bg-gradient-to-br from-emerald-50 to-green-50 shadow-lg mt-6 rounded-2xl">
-            <div className="flex items-center gap-2 mb-3">
+          <Card className="p-6 border-2 border-emerald-600 bg-gradient-to-br from-emerald-50 to-green-50 shadow-lg rounded-2xl">
+            <div className="flex items-center gap-2 mb-4">
               <TrendingUp className="w-5 h-5 text-emerald-600" />
-              <h3 className="text-lg font-bold text-gray-900">Popular Course Combinations</h3>
+              <h3 className="text-lg font-bold text-gray-900">
+                Popular Course Combinations
+              </h3>
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4">
               {popularCombinations.map((pair, idx) => (
                 <div
-                  key={`${pair.code1}-${pair.code2}-${idx}`}
-                  className="p-4 rounded-xl border-2 border-emerald-600 bg-white shadow-sm text-center"
+                  key={idx}
+                  className="p-4 rounded-xl border-2 border-emerald-600 bg-white shadow-sm text-center hover:shadow-md transition-shadow"
                 >
-                  <p className="font-bold">{pair.code1}</p>
-                  <p className="text-emerald-600 text-sm">+</p>
-                  <p className="font-bold">{pair.code2}</p>
+                  <p className="font-bold text-gray-900">{pair.code1}</p>
+                  <p className="text-emerald-600 text-sm font-semibold">+</p>
+                  <p className="font-bold text-gray-900">{pair.code2}</p>
                   <Badge className="mt-2 bg-emerald-100 text-emerald-700 text-xs">
                     {pair.count} students
                   </Badge>
@@ -560,569 +584,226 @@ export default function Courses() {
         )}
 
         {/* SEARCH + FILTERS */}
-        <div className="flex flex-col md:flex-row gap-4 mt-6">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
-            <Input
-              placeholder="Search by course name, code, or instructor..."
-              className="pl-10 rounded-xl"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleSearch();
-              }}
-              aria-label="Search courses"
-            />
+        <Card className="p-6 rounded-2xl border-2 border-emerald-600 shadow-lg bg-white">
+          <div className="flex flex-col md:flex-row gap-4">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-5 h-5" />
+              <Input
+                placeholder="Search by course name, code, or instructor..."
+                className="pl-10 h-12 rounded-xl border-2 border-gray-200 focus:border-emerald-600"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") handleSearch();
+                }}
+              />
+            </div>
+
+            <Button
+              className="h-12 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white px-6"
+              onClick={handleSearch}
+              disabled={isSearching}
+            >
+              {isSearching ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Searching...
+                </>
+              ) : (
+                <>
+                  <Search className="w-4 h-4 mr-2" />
+                  Search
+                </>
+              )}
+            </Button>
+
+            <Button
+              variant="outline"
+              className="h-12 rounded-xl border-2 border-emerald-600 text-emerald-700 hover:bg-emerald-50"
+              onClick={() => setShowSearchFilters(!showSearchFilters)}
+            >
+              <Filter className="w-4 h-4 mr-2" /> 
+              Filters
+              {activeSearchFilters > 0 && (
+                <Badge className="ml-2 bg-emerald-600 text-white">
+                  {activeSearchFilters}
+                </Badge>
+              )}
+            </Button>
           </div>
 
-          <Button
-            className="rounded-xl bg-emerald-600 hover:bg-emerald-700"
-            onClick={handleSearch}
-            disabled={isSearching}
-          >
-            {isSearching ? (
-              <>
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                Searching...
-              </>
-            ) : (
-              <>
-                <Search className="w-4 h-4 mr-2" />
-                Search
-              </>
-            )}
-          </Button>
-
-          <Button
-            variant="outline"
-            className="rounded-xl border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-            onClick={() => setShowSearchFilters((s) => !s)}
-          >
-            <Filter className="w-4 h-4 mr-2" /> Search Filters
-            {activeSearchFilters > 0 && ` (${activeSearchFilters})`}
-          </Button>
-        </div>
-
-        {/* FILTER PANEL */}
-        {showSearchFilters && (
-          <Card className="p-6 mt-4 border-2 border-emerald-600 shadow-lg bg-white rounded-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold">Search Filters</h3>
-              <Button variant="ghost" onClick={clearSearchFilters}>
-                <X className="w-4 h-4 mr-2" /> Clear All
-              </Button>
-            </div>
-
-            {/* FILTER GRID */}
-            <div className="grid md:grid-cols-2 lg:grid-cols-6 gap-4">
-              {/* Category */}
-              <div>
-                <label className="text-sm font-semibold">Category</label>
-                <Select
-                  value={searchFilters.category}
-                  onValueChange={(v) => setSearchFilters((f) => ({ ...f, category: v }))}
+          {/* FILTER PANEL */}
+          {showSearchFilters && (
+            <div className="mt-6 pt-6 border-t-2 border-gray-100">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold text-gray-900">Search Filters</h3>
+                <Button 
+                  variant="ghost" 
+                  onClick={clearSearchFilters}
+                  className="text-gray-600 hover:text-gray-900"
                 >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-60 overflow-y-auto">
-                    <SelectItem value="all">All</SelectItem>
-                    {categories.map((cat) => (
-                      <SelectItem key={cat} value={cat}>
-                        {cat}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                  <X className="w-4 h-4 mr-2" /> Clear All
+                </Button>
               </div>
 
-              {/* College */}
-              <div>
-                <label className="text-sm font-semibold">College</label>
-                <Select
-                  value={searchFilters.college}
-                  onValueChange={(v) => setSearchFilters((f) => ({ ...f, college: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-60 overflow-y-auto">
-                    <SelectItem value="all">All</SelectItem>
-                    {colleges.map((c) => (
-                      <SelectItem key={c.id} value={String(c.id)}>
-                        {c.name || c.college_name || c.collegeName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Language */}
-              <div>
-                <label className="text-sm font-semibold">Language</label>
-                <Select
-                  value={searchFilters.language}
-                  onValueChange={(v) => setSearchFilters((f) => ({ ...f, language: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Any" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-60 overflow-y-auto">
-                    <SelectItem value="all">Any</SelectItem>
-                    {LANGUAGE_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.label} value={opt.label}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Campus */}
-              <div>
-                <label className="text-sm font-semibold">Campus</label>
-                <Select
-                  value={searchFilters.campus}
-                  onValueChange={(v) => setSearchFilters((f) => ({ ...f, campus: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="HSSC">HSSC</SelectItem>
-                    <SelectItem value="NSC">NSC</SelectItem>
-                    <SelectItem value="iCampus">iCampus</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Credits */}
-              <div>
-                <label className="text-sm font-semibold">Credits</label>
-                <Input
-                  type="text"
-                  inputMode="numeric"
-                  placeholder="e.g. 3"
-                  value={searchFilters.credits}
-                  onChange={(e) =>
-                    setSearchFilters((f) => ({ ...f, credits: e.target.value.replace(/[^\d]/g, "") }))
-                  }
-                  className="rounded-xl"
-                  aria-label="Credits filter"
-                />
-              </div>
-
-              {/* Time of Day */}
-              <div>
-                <label className="text-sm font-semibold">Time of Day</label>
-                <Select
-                  value={searchFilters.timeOfDay}
-                  onValueChange={(v) => setSearchFilters((f) => ({ ...f, timeOfDay: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Any" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Any</SelectItem>
-                    <SelectItem value="morning">Morning</SelectItem>
-                    <SelectItem value="afternoon">Afternoon</SelectItem>
-                    <SelectItem value="evening">Evening</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* DAYS */}
-            <div className="mt-4">
-              <label className="text-sm font-semibold">Days</label>
-              <div className="flex flex-wrap gap-3 mt-2">
-                {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d) => (
-                  <label key={d} className="flex items-center gap-2 cursor-pointer select-none">
-                    <Checkbox
-                      checked={searchFilters.days.includes(d)}
-                      onCheckedChange={() =>
-                        setSearchFilters((prev) => ({
-                          ...prev,
-                          days: prev.days.includes(d)
-                            ? prev.days.filter((x) => x !== d)
-                            : [...prev.days, d],
-                        }))
-                      }
-                      aria-label={`Search day ${d}`}
-                    />
-                    <span className="text-sm">{d}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          </Card>
-        )}
-
-        {/* STAT CARDS */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-8">
-          <Card className="p-6 rounded-2xl border-2 border-emerald-600 bg-gradient-to-br from-emerald-500 to-green-600 text-white shadow-lg">
-            <BookOpen className="w-8 h-8" />
-            <p className="text-3xl font-bold mt-2">{totalGroups}</p>
-            <p className="text-sm opacity-90">Search Results</p>
-          </Card>
-
-          <Card className="p-6 rounded-2xl border-2 border-emerald-600 bg-gradient-to-br from-green-500 to-emerald-600 text-white shadow-lg">
-            <Plus className="w-8 h-8" />
-            <p className="text-3xl font-bold mt-2">{catalog.length}</p>
-            <p className="text-sm opacity-90">In Your Catalog</p>
-          </Card>
-        </div>
-
-        {/* RESULT FILTER TOGGLE */}
-        <div className="flex justify-end mt-6">
-          <Button
-            variant="outline"
-            className="rounded-xl border-emerald-600 text-emerald-700 hover:bg-emerald-50"
-            onClick={() => setShowResultFilters((s) => !s)}
-          >
-            <Filter className="w-4 h-4 mr-2" /> Result Filters
-            {activeResultFilters > 0 && ` (${activeResultFilters})`}
-          </Button>
-        </div>
-
-        {/* RESULT FILTER PANEL */}
-        {showResultFilters && (
-          <Card className="p-6 mt-4 border-2 border-emerald-600 shadow-lg bg-white rounded-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-lg font-bold">Filter Found Results</h3>
-              <Button variant="ghost" onClick={clearResultFilters}>
-                <X className="w-4 h-4 mr-2" /> Clear All
-              </Button>
-            </div>
-
-            <div className="grid md:grid-cols-2 lg:grid-cols-5 gap-4">
-              {/* College */}
-              <div>
-                <label className="text-sm font-semibold">College</label>
-                <Select
-                  value={resultFilters.college}
-                  onValueChange={(v) => setResultFilters((f) => ({ ...f, college: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-60 overflow-y-auto">
-                    <SelectItem value="all">All</SelectItem>
-                    {colleges.map((c) => (
-                      <SelectItem key={c.id} value={String(c.id)}>
-                        {c.name || c.college_name || c.collegeName}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Language */}
-              <div>
-                <label className="text-sm font-semibold">Language</label>
-                <Select
-                  value={resultFilters.language}
-                  onValueChange={(v) => setResultFilters((f) => ({ ...f, language: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Any" />
-                  </SelectTrigger>
-                  <SelectContent className="max-h-60 overflow-y-auto">
-                    <SelectItem value="all">Any</SelectItem>
-                    {LANGUAGE_OPTIONS.map((opt) => (
-                      <SelectItem key={opt.label} value={opt.label}>
-                        {opt.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Campus */}
-              <div>
-                <label className="text-sm font-semibold">Campus</label>
-                <Select
-                  value={resultFilters.campus}
-                  onValueChange={(v) => setResultFilters((f) => ({ ...f, campus: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    <SelectItem value="HSSC">HSSC</SelectItem>
-                    <SelectItem value="NSC">NSC</SelectItem>
-                    <SelectItem value="iCampus">iCampus</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Credits */}
-              <div>
-                <label className="text-sm font-semibold">Credits</label>
-                <Select
-                  value={resultFilters.credits}
-                  onValueChange={(v) => setResultFilters((f) => ({ ...f, credits: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Select" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">All</SelectItem>
-                    {creditOptions.map((c) => (
-                      <SelectItem key={c} value={String(c)}>
-                        {c} Credits
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Time of Day */}
-              <div>
-                <label className="text-sm font-semibold">Time of Day</label>
-                <Select
-                  value={resultFilters.timeOfDay}
-                  onValueChange={(v) => setResultFilters((f) => ({ ...f, timeOfDay: v }))}
-                >
-                  <SelectTrigger className="rounded-xl">
-                    <SelectValue placeholder="Any" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="all">Any</SelectItem>
-                    <SelectItem value="morning">Morning</SelectItem>
-                    <SelectItem value="afternoon">Afternoon</SelectItem>
-                    <SelectItem value="evening">Evening</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            {/* DAYS */}
-            <div className="mt-4">
-              <label className="text-sm font-semibold">Days</label>
-              <div className="flex flex-wrap gap-3 mt-2">
-                {["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"].map((d) => (
-                  <label key={d} className="flex items-center gap-2 cursor-pointer select-none">
-                    <Checkbox
-                      checked={resultFilters.days.includes(d)}
-                      onCheckedChange={() =>
-                        setResultFilters((prev) => ({
-                          ...prev,
-                          days: prev.days.includes(d)
-                            ? prev.days.filter((x) => x !== d)
-                            : [...prev.days, d],
-                        }))
-                      }
-                      aria-label={`Result day ${d}`}
-                    />
-                    <span className="text-sm">{d}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          </Card>
-        )}
-
-        {/* EMPTY / LOADING STATE */}
-        {isSearching && (
-          <Card className="mt-8 p-6 rounded-2xl border-2 border-emerald-200 bg-white">
-            <div className="flex items-center gap-3 text-gray-700">
-              <Loader2 className="w-5 h-5 animate-spin" />
-              <p className="font-medium">Loading courses…</p>
-            </div>
-          </Card>
-        )}
-
-        {!isSearching && totalGroups === 0 && (
-          <Card className="mt-8 p-6 rounded-2xl border-2 border-amber-300 bg-amber-50">
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="w-5 h-5 text-amber-700 mt-0.5" />
-              <div>
-                <p className="font-bold text-amber-900">No courses found</p>
-                <p className="text-amber-800 text-sm mt-1">
-                  Try clearing filters or changing your search keywords.
-                </p>
-              </div>
-            </div>
-          </Card>
-        )}
-
-        {/* COURSE LIST */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-10">
-          {Object.entries(groupedCourses).map(([baseCode, sections]) => {
-            const first = sections[0];
-            const avgRating = getCourseAvgRating(first.id);
-            const courseReviews = getCourseReviews(first.id);
-
-            return (
-              <Card
-                key={baseCode}
-                className="p-6 rounded-2xl border-2 border-emerald-600 bg-white shadow-md hover:shadow-xl transition-shadow"
-              >
-                {/* HEADER */}
-                <div className="flex justify-between items-start gap-3">
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <h3 className="font-bold text-xl text-gray-900">{baseCode}</h3>
-
-                      <Badge className="bg-emerald-600 text-white px-2">
-                        {first.credits} Credits
-                      </Badge>
-
-                      <Badge variant="outline" className="px-2">
-                        {first.majorLabel}
-                      </Badge>
-
-                      {avgRating > 0 && (
-                        <Badge className="bg-yellow-200 text-yellow-800 border-yellow-400 flex items-center px-2">
-                          <Star className="w-3 h-3 mr-1 fill-yellow-600" />
-                          {avgRating.toFixed(1)}
-                        </Badge>
-                      )}
-                    </div>
-
-                    <h4 className="text-gray-900 font-semibold truncate">{first.name}</h4>
-                    {first.description ? (
-                      <p className="text-sm text-gray-600 line-clamp-2 mt-1">{first.description}</p>
-                    ) : (
-                      <p className="text-sm text-gray-500 mt-1 italic">No description available.</p>
-                    )}
-                  </div>
-
-                  <div className="flex gap-2 shrink-0">
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-emerald-700 hover:bg-emerald-50 rounded-xl"
-                      onClick={() => {
-                        setSelectedCourse(first);
-                        setDetailDialogOpen(true);
-                      }}
-                    >
-                      <Info className="w-4 h-4 mr-1" /> Details
-                    </Button>
-
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="text-emerald-700 hover:bg-emerald-50 rounded-xl"
-                      onClick={() => {
-                        setSelectedCourse(first);
-                        setRatingDialogOpen(true);
-                      }}
-                    >
-                      <Star className="w-4 h-4 mr-1" /> Rate
-                    </Button>
-                  </div>
+              {/* FILTER GRID */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                {/* Category */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Category</label>
+                  <Select
+                    value={searchFilters.category}
+                    onValueChange={(v) =>
+                      setSearchFilters((f) => ({ ...f, category: v }))
+                    }
+                  >
+                    <SelectTrigger className="rounded-xl h-10">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      <SelectItem value="all">All</SelectItem>
+                      {categories.map((cat) => (
+                        <SelectItem key={cat} value={cat}>
+                          {cat}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
 
-                {/* REVIEWS */}
-                {courseReviews.length > 0 && (
-                  <div className="border-t mt-4 pt-3">
-                    <CourseRatings reviews={courseReviews} />
-                  </div>
-                )}
-
-                {/* SECTIONS */}
-                <p className="text-xs font-semibold text-gray-700 mt-5 mb-2 uppercase tracking-wide">
-                  Sections ({sections.length})
-                </p>
-
-                <div className="space-y-3">
-                  {sections.map((sec) => {
-                    const inCatalog = isInCatalog(sec.id);
-
-                    return (
-                      <div
-                        key={sec.id}
-                        className="flex items-center justify-between gap-3 p-4 rounded-xl border bg-gray-50 hover:border-emerald-600 transition-colors"
-                      >
-                        <div className="flex-1 min-w-0">
-                          <p className="font-semibold text-sm text-gray-900">{sec.code}</p>
-
-                          <div className="flex flex-wrap gap-2 text-xs text-gray-600 mt-1">
-                            <Badge variant="outline" className="flex items-center">
-                              <MapPin className="w-3 h-3 mr-1" />
-                              {sec.campus}
-                            </Badge>
-
-                            <Badge variant="outline" className="flex items-center">
-                              <Users className="w-3 h-3 mr-1" />
-                              {sec.enrolled}/{sec.capacity}
-                            </Badge>
-                          </div>
-
-                          <p className="text-xs text-gray-600 mt-1 truncate">{sec.instructor}</p>
-
-                          <div className="flex flex-wrap gap-2 mt-1 text-xs text-gray-500">
-                            {(sec.schedule || []).length ? (
-                              sec.schedule.map((slot, i) => (
-                                <span key={`${sec.id}-${i}`}>
-                                  {slot.day.slice(0, 3)} {slot.start_time}-{slot.end_time}
-                                </span>
-                              ))
-                            ) : (
-                              <span className="italic">Schedule TBD</span>
-                            )}
-                          </div>
-                        </div>
-
-                        <Button
-                          size="sm"
-                          className={`rounded-xl px-4 ${
-                            inCatalog
-                              ? "bg-green-600 hover:bg-green-700"
-                              : "bg-emerald-600 hover:bg-emerald-700"
-                          }`}
-                          onClick={() => {
-                            const item = getCatalogItem(sec.id);
-                            if (item) removeFromCatalog.mutate(item.id);
-                            else addToCatalog.mutate(sec);
-                          }}
-                          disabled={addToCatalog.isPending || removeFromCatalog.isPending}
-                          aria-label={inCatalog ? "Remove from catalog" : "Add to catalog"}
-                        >
-                          {inCatalog ? (
-                            <>
-                              <Check className="w-4 h-4 mr-1" />
-                              Added
-                            </>
-                          ) : (
-                            <>
-                              <Plus className="w-4 h-4 mr-1" />
-                              Add
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                    );
-                  })}
+                {/* College */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">College</label>
+                  <Select
+                    value={searchFilters.college}
+                    onValueChange={(v) =>
+                      setSearchFilters((f) => ({ ...f, college: v, major: "all" }))
+                    }
+                  >
+                    <SelectTrigger className="rounded-xl h-10">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      <SelectItem value="all">All</SelectItem>
+                      {colleges.map((c) => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          {c.name || c.college_name || c.collegeName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
-              </Card>
-            );
-          })}
-        </div>
-      </div>
 
-      {/* CHATBOT + DIALOGS */}
-      <AIChatbot allCourses={allCourses} />
+                {/* Major */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Major</label>
+                  <Select
+                    value={searchFilters.major}
+                    onValueChange={(v) =>
+                      setSearchFilters((f) => ({ ...f, major: v }))
+                    }
+                  >
+                    <SelectTrigger className="rounded-xl h-10" disabled={majors.length === 0}>
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      <SelectItem value="all">All</SelectItem>
+                      {majors.map((m) => (
+                        <SelectItem key={m.id} value={String(m.id)}>
+                          {m.name || m.major_name || m.majorName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-      <RatingDialog
-        course={selectedCourse}
-        open={ratingDialogOpen}
-        onOpenChange={setRatingDialogOpen}
-        onSubmit={(data) => submitReview.mutate(data)}
-        isSubmitting={submitReview.isPending}
-      />
+                {/* Language */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Language</label>
+                  <Select
+                    value={searchFilters.language}
+                    onValueChange={(v) =>
+                      setSearchFilters((f) => ({ ...f, language: v }))
+                    }
+                  >
+                    <SelectTrigger className="rounded-xl h-10">
+                      <SelectValue placeholder="Any" />
+                    </SelectTrigger>
+                    <SelectContent className="max-h-60">
+                      <SelectItem value="all">Any</SelectItem>
+                      {LANGUAGE_OPTIONS.map((opt) => (
+                        <SelectItem key={opt.label} value={opt.label}>
+                          {opt.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
 
-      <CourseDetailDialog
-        course={selectedCourse}
-        open={detailDialogOpen}
-        onOpenChange={setDetailDialogOpen}
-        allCourses={allCourses}
-      />
-    </div>
-  );
-}
+                {/* Campus */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Campus</label>
+                  <Select
+                    value={searchFilters.campus}
+                    onValueChange={(v) =>
+                      setSearchFilters((f) => ({ ...f, campus: v }))
+                    }
+                  >
+                    <SelectTrigger className="rounded-xl h-10">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All</SelectItem>
+                      <SelectItem value="HSSC">HSSC</SelectItem>
+                      <SelectItem value="NSC">NSC</SelectItem>
+                      <SelectItem value="iCampus">iCampus</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Credits */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Credits</label>
+                  <Input
+                    type="number"
+                    placeholder="e.g. 3"
+                    value={searchFilters.credits}
+                    onChange={(e) =>
+                      setSearchFilters((f) => ({ ...f, credits: e.target.value }))
+                    }
+                    className="rounded-xl h-10"
+                  />
+                </div>
+
+                {/* Time of Day */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Time of Day</label>
+                  <Select
+                    value={searchFilters.timeOfDay}
+                    onValueChange={(v) =>
+                      setSearchFilters((f) => ({ ...f, timeOfDay: v }))
+                    }
+                  >
+                    <SelectTrigger className="rounded-xl h-10">
+                      <SelectValue placeholder="Any" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">Any</SelectItem>
+                      <SelectItem value="morning">Morning</SelectItem>
+                      <SelectItem value="afternoon">Afternoon</SelectItem>
+                      <SelectItem value="evening">Evening</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                {/* Rating */}
+                <div>
+                  <label className="text-sm font-semibold text-gray-700 mb-2 block">Min Rating</label>
+                  <Select
+                    value={searchFilters.minRating}
+                    onValueChange={(v) =>
+                      setSearchFilters((f) => ({ ...f, minRating: v }))
+                    }
+                  >
+                    <SelectTrigger className="rounded-xl h-10">
+                      <SelectValue placeholder="Any" />
